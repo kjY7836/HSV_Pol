@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environments and editors
+.venv/
+venv/
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Runtime outputs and partial files
+runs/
+*.partial
+*.log
+
+# Kept locally but intentionally outside the minimal Git payload
+docs/
+pyproject.toml
+
+# Local overrides and secrets
+.env
+.env.*
+config/local*.json

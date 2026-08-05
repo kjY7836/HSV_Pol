@@ -1,0 +1,160 @@
+{
+  "project_name": "HSV_POL_H9E937_8V1Q_WT_full",
+  "seed": 20260805,
+  "workers": 64,
+  "data_dir": "../data",
+  "output_dir": "runs/full_8v1q",
+  "references": {
+    "pdb_id": "7LUF",
+    "ligand_resname": "YE4",
+    "ligand_name": "PNU-183792",
+    "ligand_chain": "C",
+    "ligand_resid": 1201,
+    "pdb_file": "references/7LUF.pdb",
+    "cif_file": "references/7LUF.cif",
+    "ccd_file": "references/YE4.cif",
+    "bound_ligand_sdf": "references/PNU-183792_7LUF_bound.sdf"
+  },
+  "target_structures": [
+    {
+      "pdb_id": "8V1Q",
+      "uniprot_id": "H9E937",
+      "state": "nucleotide-free conformational ensemble",
+      "pdb_file": "references/8V1Q.pdb",
+      "cif_file": "references/8V1Q.cif",
+      "receptor_pdb": "references/8V1Q_WT_UL30_DNA_no_water.pdb",
+      "receptor_pdbqt": "references/8V1Q_WT_UL30_DNA_no_water.pdbqt",
+      "receptor_chains": ["A", "P", "T"],
+      "remove_resnames": ["HOH", "DOD"],
+      "wt_residue_checks": {"781": "TRP"},
+      "docking_receptor": true,
+      "box": {"center": [147.660, 145.083, 124.388], "size": [24.0, 24.0, 28.0], "basis": "8V1R dTTP site transferred by local UL30 C-alpha alignment"},
+      "use": "WT open-state catalytic/nucleotide-pocket docking"
+    },
+    {
+      "pdb_id": "8V1R",
+      "uniprot_id": "H9E937",
+      "state": "dTTP-bound closed",
+      "pdb_file": "references/8V1R.pdb",
+      "cif_file": "references/8V1R.cif",
+      "wt_residue_checks": {"781": "TRP"},
+      "docking_receptor": false,
+      "box": {"center": [147.302, 144.936, 124.925], "size": [24.0, 24.0, 28.0], "basis": "experimental 8V1R dTTP heavy-atom centroid"},
+      "use": "structural reference used only to transfer the dTTP-site box to 8V1Q; not a docking receptor"
+    }
+  ],
+  "sample": {"enabled": false, "active_records": 0, "candidate_records": 0},
+  "standardization": {
+    "batch_size": 1024,
+    "allowed_parent_atomic_numbers": [5, 6, 7, 8, 9, 14, 15, 16, 17, 35, 53],
+    "max_counterion_heavy_atoms": 12
+  },
+  "filters": {
+    "allowed_atomic_numbers": [5, 6, 7, 8, 9, 14, 15, 16, 17, 35, 53],
+    "min_heavy_atoms": 10,
+    "max_heavy_atoms": 70,
+    "min_mw": 180.0,
+    "max_mw": 650.0,
+    "min_clogp": -1.5,
+    "max_clogp": 6.5,
+    "min_tpsa": 15.0,
+    "max_tpsa": 180.0,
+    "max_hbd": 7,
+    "max_hba": 14,
+    "max_rotatable_bonds": 15,
+    "max_rings": 10,
+    "max_abs_formal_charge": 2
+  },
+  "fingerprint": {"radius": 2, "n_bits": 2048},
+  "prescreen_3d_pool": {
+    "size": 200000,
+    "include_all_activity_recorded": true,
+    "channel_fractions": {"pnu_2d": 0.20, "pharm2d": 0.15, "scaffold_diversity": 0.45, "exploration": 0.20}
+  },
+  "structure_3d": {
+    "num_conformers": 5,
+    "pnu_alignment_channels": ["pnu_2d", "pharm2d"],
+    "prune_rms_threshold": 0.5,
+    "pocket_radius": 6.0,
+    "clash_distance": 1.25,
+    "feature_contact_cutoffs": {"Donor": 4.2, "Acceptor": 4.2, "Aromatic": 5.5, "PosIonizable": 5.5, "NegIonizable": 5.5},
+    "feature_tolerances": {"Donor": 1.8, "Acceptor": 1.8, "Aromatic": 2.2, "PosIonizable": 2.5, "NegIonizable": 2.5},
+    "feature_weights": {"Donor": 1.0, "Acceptor": 1.0, "Aromatic": 0.8, "PosIonizable": 0.8, "NegIonizable": 0.8}
+  },
+  "final_selection": {
+    "activity_recorded_policy": "all_3d_feasible",
+    "require_all_activity_recorded_3d": true,
+    "activity_selection_channel": "activity_recorded_all",
+    "unlabeled_count": 10000,
+    "unlabeled_channel_counts": {"pnu_structure3d_enrichment": 1000, "pnu_2d_enrichment": 1000, "pnu_pharm2d_enrichment": 1000, "h9e937_pocket_discovery": 1500, "diversity": 4000, "exploration": 1500},
+    "default_scaffold_cap": 3,
+    "targeted_scaffold_cap": 6,
+    "global_scaffold_cap": 6,
+    "min_structure3d_score": 0.0,
+    "min_diversity_qed": 0.35,
+    "diversity_oversample_factor": 8
+  },
+  "ligand_states": {
+    "protonation_method": "openbabel",
+    "ph": 7.4,
+    "tautomer_method": "rdkit_canonical",
+    "states_per_parent": 1,
+    "conformers_per_state": 1,
+    "embed_3d": true
+  },
+  "docking": {
+    "engine": "smina",
+    "cpu_per_job": 1,
+    "parallel_jobs": 64,
+    "chunk_size": 100,
+    "production_required_protocols": ["8v1q_open_wt"],
+    "protocols": [
+      {
+        "protocol_id": "8v1q_open_wt",
+        "enabled": true,
+        "production": true,
+        "receptor_id": "8V1Q_H9E937_WT_open",
+        "receptor_pdb": "references/8V1Q_WT_UL30_DNA_no_water.pdb",
+        "receptor_pdbqt": "references/8V1Q_WT_UL30_DNA_no_water.pdbqt",
+        "box_id": "open_nucleotide_site",
+        "box": {"center": [147.660, 145.083, 124.388], "size": [24.0, 24.0, 28.0]},
+        "scope": {"selection_channels": ["*"], "max_parents": 0},
+        "mutant_id": "WT",
+        "exhaustiveness": 12,
+        "num_modes": 9
+      }
+    ]
+  },
+  "postdock_3d": {
+    "reference": "PNU-183792_7LUF_experimental_conformation",
+    "minimum_pose_coverage": 0.95,
+    "interpretation": "ligand-conformation similarity after O3A alignment; not 8V1Q binding-site overlap"
+  },
+  "integrated_scoring": {
+    "excluded_protocols": [],
+    "required_protocols": ["8v1q_open_wt"],
+    "postdock_3d_required": true,
+    "minimum_postdock_3d_pose_coverage": 0.95,
+    "predocking": {
+      "weights": {"pnu_consensus": 0.65, "quality_score": 0.35},
+      "usage": "rank only inside evidence channels; never replace diversity/exploration quotas"
+    },
+    "affinity": {
+      "prediction_column": "predicted_paffinity",
+      "midpoint_paffinity": 6.0,
+      "sigmoid_scale": 1.0,
+      "minimum_pose_coverage": 0.95,
+      "minimum_parent_coverage": 0.95
+    },
+    "profiles": {
+      "wt": {
+        "weights": {
+          "wt_affinity": 0.55,
+          "postdock_3d_similarity": 0.20,
+          "docking_consensus": 0.15,
+          "qed": 0.10
+        }
+      }
+    }
+  }
+}

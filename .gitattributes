@@ -1,0 +1,6 @@
+# Preserve crystallographic/reference records byte-for-byte and avoid noisy
+# textual diffs or whitespace normalization in coordinate data.
+references/*.cif binary
+references/*.pdb binary
+references/*.pdbqt binary
+references/*.sdf binary

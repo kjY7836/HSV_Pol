@@ -1,0 +1,113 @@
+{
+  "pdb_id": "7LUF",
+  "ligand": "PNU-183792",
+  "ccd_id": "YE4",
+  "bound_instance": "C:1201",
+  "pnu_canonical_smiles": "Cn1cc(C(=O)NCc2ccc(Cl)cc2)c(=O)c2cc(CN3CCOCC3)ccc21",
+  "ligand_instances": {
+    "C:1201": 30,
+    "E:1201": 30
+  },
+  "checksums": {
+    "7LUF.pdb": "a62ce9ea817ccc3c7519df99dffcddfd86b73589899eaba2198d3f07f3928aed",
+    "7LUF.cif": "c82d09d8fb7ef87d93feab8caf1c90b51d76a723a04fd324e58480a9eb1ca8f3",
+    "YE4.cif": "dadc3d881dcf4c9d6e862e88ef07debcd74ce080755863300de1ff4f0ebf957a",
+    "YE4_ideal.sdf": "e1b55fa888b903e6dea4940b358b8e8138d8b594746cc15f9345b93e895307b4",
+    "PNU-183792_7LUF_bound.sdf": "2db65afe0ec219e4a7ac1bb2d35a7d0d86071ea8b272903d6ff16e65ba2d7c34",
+    "8V1Q.pdb": "f80e211f7d45fd30cb31e10d03ca6c76ed1a110e38500640d37a411ab995a7fc",
+    "8V1Q.cif": "338c306634aba6df76838bc47b2d32f7a05f2bddaa254100f52dc225dbd3e467",
+    "8V1R.pdb": "5fb5d0881ae2a4446b568f107ad7b604c2ca760dec972950093bf3705017ced7",
+    "8V1R.cif": "4436e12a0fd434346f0142d2f462971ae02b09d7d93c5628b615fac426350313",
+    "dTTP_8V1R_bound.sdf": "8a83b622ed41beb22911423a5c643b4b985f1b9548501fac6b3ad885bb59e102"
+  },
+  "source_urls": {
+    "7LUF.pdb": "https://files.rcsb.org/download/7LUF.pdb",
+    "7LUF.cif": "https://files.rcsb.org/download/7LUF.cif",
+    "YE4.cif": "https://files.rcsb.org/ligands/download/YE4.cif",
+    "YE4_ideal.sdf": "https://files.rcsb.org/ligands/download/YE4_ideal.sdf",
+    "PNU-183792_7LUF_bound.sdf": "https://models.rcsb.org/v1/7luf/ligand?auth_asym_id=C&auth_seq_id=1201&encoding=sdf",
+    "8V1Q.pdb": "https://files.rcsb.org/download/8V1Q.pdb",
+    "8V1Q.cif": "https://files.rcsb.org/download/8V1Q.cif",
+    "8V1R.pdb": "https://files.rcsb.org/download/8V1R.pdb",
+    "8V1R.cif": "https://files.rcsb.org/download/8V1R.cif",
+    "dTTP_8V1R_bound.sdf": "https://models.rcsb.org/v1/8v1r/ligand?auth_asym_id=A&auth_seq_id=1306&encoding=sdf"
+  },
+  "experimental_bound_conformation": "/mnt/sda/ykj/HSV_Pol/full_library_screening/references/PNU-183792_7LUF_bound.sdf",
+  "experimental_dttp_conformation": "/mnt/sda/ykj/HSV_Pol/full_library_screening/references/dTTP_8V1R_bound.sdf",
+  "target_structures": [
+    {
+      "pdb_id": "8V1Q",
+      "uniprot_id": "H9E937",
+      "state": "nucleotide-free conformational ensemble",
+      "pdb_file": "/mnt/sda/ykj/HSV_Pol/full_library_screening/references/8V1Q.pdb",
+      "use": "WT open-state catalytic/nucleotide-pocket docking",
+      "docking_receptor": true,
+      "box": {
+        "center": [
+          147.66,
+          145.083,
+          124.388
+        ],
+        "size": [
+          24.0,
+          24.0,
+          28.0
+        ],
+        "basis": "8V1R dTTP site transferred by local UL30 C-alpha alignment"
+      },
+      "wt_residue_checks": {
+        "781": "TRP"
+      },
+      "receptor": "/mnt/sda/ykj/HSV_Pol/full_library_screening/references/8V1Q_WT_UL30_DNA_no_water.pdb",
+      "receptor_pdbqt": "/mnt/sda/ykj/HSV_Pol/full_library_screening/references/8V1Q_WT_UL30_DNA_no_water.pdbqt",
+      "receptor_preparation": {
+        "included_chains": [
+          "A",
+          "P",
+          "T"
+        ],
+        "included_atom_counts": {
+          "A": 8689,
+          "P": 535,
+          "T": 610
+        },
+        "excluded_chain_atom_counts": {
+          "B": 2077
+        },
+        "removed_resnames": [
+          "DOD",
+          "HOH"
+        ],
+        "removed_atom_counts": {
+          "HOH": 3
+        }
+      },
+      "pdbqt_status": "ok"
+    },
+    {
+      "pdb_id": "8V1R",
+      "uniprot_id": "H9E937",
+      "state": "dTTP-bound closed",
+      "pdb_file": "/mnt/sda/ykj/HSV_Pol/full_library_screening/references/8V1R.pdb",
+      "use": "structural reference used only to transfer the dTTP-site box to 8V1Q; not a docking receptor",
+      "docking_receptor": false,
+      "box": {
+        "center": [
+          147.302,
+          144.936,
+          124.925
+        ],
+        "size": [
+          24.0,
+          24.0,
+          28.0
+        ],
+        "basis": "experimental 8V1R dTTP heavy-atom centroid"
+      },
+      "wt_residue_checks": {
+        "781": "TRP"
+      }
+    }
+  ],
+  "warning": "8V1Q Open Babel receptor PDBQT is a baseline only; inspect protonation, metal, and DNA treatment before production docking."
+}
