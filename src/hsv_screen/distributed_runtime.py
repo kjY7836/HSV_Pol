@@ -13,7 +13,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping
 
-from .config import load_config, resolve_path
+from .config import (
+    REQUIRED_DISTRIBUTED_NODES,
+    REQUIRED_WORKERS_PER_NODE,
+    load_config,
+    resolve_path,
+)
 from .io_utils import atomic_json
 
 
@@ -57,15 +62,18 @@ def validate_layout(config: dict, world_size: int | None = None) -> dict:
     workers = int(settings.get("workers_per_node", 0))
     local_workers = int(config.get("workers", 0))
     docking_workers = int(config.get("docking", {}).get("parallel_jobs_per_node", 0))
-    if nodes != 4:
-        raise ValueError(f"This workflow requires distributed.nodes=4, found {nodes}")
-    if workers != 32 or local_workers != 32:
+    if nodes != REQUIRED_DISTRIBUTED_NODES:
         raise ValueError(
-            "This workflow requires 32 local workers per node; found "
+            "This workflow requires distributed.nodes="
+            f"{REQUIRED_DISTRIBUTED_NODES}, found {nodes}")
+    if workers != REQUIRED_WORKERS_PER_NODE or local_workers != REQUIRED_WORKERS_PER_NODE:
+        raise ValueError(
+            f"This workflow requires {REQUIRED_WORKERS_PER_NODE} local workers per node; found "
             f"distributed.workers_per_node={workers}, workers={local_workers}")
-    if docking_workers != 32:
+    if docking_workers != REQUIRED_WORKERS_PER_NODE:
         raise ValueError(
-            "This workflow requires docking.parallel_jobs_per_node=32, found "
+            "This workflow requires docking.parallel_jobs_per_node="
+            f"{REQUIRED_WORKERS_PER_NODE}, found "
             f"{docking_workers}")
     if int(config["docking"].get("cpu_per_job", 0)) != 1:
         raise ValueError("Distributed Smina requires docking.cpu_per_job=1")
@@ -87,7 +95,10 @@ def build_mpi_command(config: dict, config_path: Path, mode: str) -> list[str]:
             "mpirun is unavailable. Load the platform MPI module inside the allocated "
             "job (for example `module load mpi`) before running the Python entry point.")
     arguments = [str(value) for value in settings.get(
-        "launcher_args", ["--map-by", "ppr:1:node:PE=32", "--bind-to", "core"])]
+        "launcher_args", [
+            "--map-by", f"ppr:1:node:PE={REQUIRED_WORKERS_PER_NODE}",
+            "--bind-to", "core",
+        ])]
     return [
         launcher, "-np", str(layout["nodes"]), *arguments,
         sys.executable, "-m", "src.hsv_screen.cli", mode,
@@ -180,7 +191,9 @@ class RankContext:
         self.barrier(f"value_{name}")
         return json.loads(path.read_text(encoding="utf-8"))
 
-    def validate_unique_hosts(self) -> list[str]:
+    def validate_unique_hosts(self, config: dict) -> list[str]:
+        required_cpus = int(config["distributed"]["workers_per_node"])
+        mapping = f"ppr:1:node:PE={required_cpus}"
         host_dir = self.sync_dir / "hosts"
         affinity_count = (
             len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity")
@@ -198,16 +211,16 @@ class RankContext:
             if len(set(hosts)) != self.size:
                 raise RuntimeError(
                     "MPI ranks are not mapped one-per-node: " + ", ".join(hosts) +
-                    ". Use the configured `--map-by ppr:1:node:PE=32` launcher mapping.")
+                    f". Use the configured `--map-by {mapping}` launcher mapping.")
             insufficient = [record for record in records
-                            if int(record.get("available_cpus", 0)) < 32]
+                            if int(record.get("available_cpus", 0)) < required_cpus]
             if insufficient:
                 raise RuntimeError(
-                    "At least one MPI rank can access fewer than 32 CPUs: " +
+                    f"At least one MPI rank can access fewer than {required_cpus} CPUs: " +
                     ", ".join(
                         f"{record['hostname']}={record.get('available_cpus')}"
                         for record in insufficient) +
-                    ". Use `ppr:1:node:PE=32`, bind to cores, and request ptile=32.")
+                    f". Use `{mapping}`, bind to cores, and request ptile={required_cpus}.")
             atomic_json(result_path, {"hosts": hosts, "records": records})
         self.barrier("hosts_validated")
         return list(json.loads(result_path.read_text(encoding="utf-8"))["hosts"])

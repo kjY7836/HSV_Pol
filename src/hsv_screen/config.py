@@ -6,6 +6,8 @@ from pathlib import Path
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
+REQUIRED_DISTRIBUTED_NODES = 2
+REQUIRED_WORKERS_PER_NODE = 64
 
 
 def _merge(base: dict, override: dict) -> dict:
@@ -41,12 +43,23 @@ def resolve_path(config: dict, value: str | Path) -> Path:
 
 def validate_config(config: dict) -> None:
     distributed = config.get("distributed", {})
-    if int(distributed.get("nodes", 0)) != 4:
-        raise ValueError("distributed.nodes must be exactly 4")
-    if int(distributed.get("workers_per_node", 0)) != 32 or int(config.get("workers", 0)) != 32:
-        raise ValueError("workers and distributed.workers_per_node must both be exactly 32")
-    if int(config.get("docking", {}).get("parallel_jobs_per_node", 0)) != 32:
-        raise ValueError("docking.parallel_jobs_per_node must be exactly 32")
+    if int(distributed.get("nodes", 0)) != REQUIRED_DISTRIBUTED_NODES:
+        raise ValueError(
+            f"distributed.nodes must be exactly {REQUIRED_DISTRIBUTED_NODES}")
+    if (
+        int(distributed.get("workers_per_node", 0)) != REQUIRED_WORKERS_PER_NODE
+        or int(config.get("workers", 0)) != REQUIRED_WORKERS_PER_NODE
+    ):
+        raise ValueError(
+            "workers and distributed.workers_per_node must both be exactly "
+            f"{REQUIRED_WORKERS_PER_NODE}")
+    if (
+        int(config.get("docking", {}).get("parallel_jobs_per_node", 0))
+        != REQUIRED_WORKERS_PER_NODE
+    ):
+        raise ValueError(
+            "docking.parallel_jobs_per_node must be exactly "
+            f"{REQUIRED_WORKERS_PER_NODE}")
     pre = config["prescreen_3d_pool"]
     if abs(sum(pre["channel_fractions"].values()) - 1.0) > 1e-9:
         raise ValueError("prescreen_3d_pool.channel_fractions must sum to 1")

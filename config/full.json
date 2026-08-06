@@ -1,12 +1,12 @@
 {
   "project_name": "HSV_POL_H9E937_8V1Q_WT_full",
   "seed": 20260805,
-  "workers": 32,
+  "workers": 64,
   "distributed": {
-    "nodes": 4,
-    "workers_per_node": 32,
+    "nodes": 2,
+    "workers_per_node": 64,
     "launcher": "mpirun",
-    "launcher_args": ["--map-by", "ppr:1:node:PE=32", "--bind-to", "core"],
+    "launcher_args": ["--map-by", "ppr:1:node:PE=64", "--bind-to", "core"],
     "barrier_timeout_seconds": 604800,
     "barrier_poll_seconds": 2.0
   },
@@ -113,7 +113,7 @@
   "docking": {
     "engine": "smina",
     "cpu_per_job": 1,
-    "parallel_jobs_per_node": 32,
+    "parallel_jobs_per_node": 64,
     "chunk_size": 100,
     "production_required_protocols": ["8v1q_open_wt"],
     "protocols": [

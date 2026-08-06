@@ -1,7 +1,7 @@
 {
   "extends": "full.json",
   "project_name": "HSV_POL_H9E937_8V1Q_WT_sample_10000",
-  "workers": 32,
+  "workers": 64,
   "output_dir": "runs/sample_10000_8v1q",
   "sample": {"enabled": true, "active_records": 2000, "candidate_records": 8000},
   "prescreen_3d_pool": {
@@ -13,5 +13,5 @@
     "unlabeled_count": 167,
     "unlabeled_channel_counts": {"pnu_structure3d_enrichment": 17, "pnu_2d_enrichment": 17, "pnu_pharm2d_enrichment": 17, "h9e937_pocket_discovery": 25, "diversity": 66, "exploration": 25}
   },
-  "docking": {"parallel_jobs_per_node": 32, "chunk_size": 25, "production_required_protocols": ["8v1q_open_wt"]}
+  "docking": {"parallel_jobs_per_node": 64, "chunk_size": 25, "production_required_protocols": ["8v1q_open_wt"]}
 }

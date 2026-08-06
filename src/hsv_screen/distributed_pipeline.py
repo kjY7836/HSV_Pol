@@ -40,6 +40,16 @@ def _as_bool(value: object) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes"}
 
 
+def _distributed_metadata(config: dict, include_total: bool = False) -> dict:
+    settings = config["distributed"]
+    nodes = int(settings["nodes"])
+    workers = int(settings["workers_per_node"])
+    result = {"nodes": nodes, "workers_per_node": workers}
+    if include_total:
+        result["total_workers"] = nodes * workers
+    return result
+
+
 def _root_step(context: RankContext, name: str, function: Callable[[], object]) -> None:
     if context.is_root:
         context.log(f"start {name}")
@@ -198,7 +208,7 @@ def _merge_standardized(config: dict, plan: dict, stage: Path) -> None:
         "activity_file": plan["activity_file"], "candidate_files": plan["candidate_files"],
         "sample": plan["sample"], "counts": dict(counts),
         "exact_parent_count": len(seen_exact),
-        "distributed": {"nodes": 4, "workers_per_node": 32},
+        "distributed": _distributed_metadata(config),
         "interpretation": {
             "activity_recorded_is_target_label": False,
             "component_policy": "Remove only explicitly recognized salt/solvent components when one unambiguous organic parent remains; quarantine ambiguous multi-organic and metal-containing records.",
@@ -274,7 +284,7 @@ def run_score2d(config: dict, context: RankContext) -> None:
             "library_evidence_formula": "0.65*PNU_consensus + 0.35*quality_score; channel ranking only, not final scoring",
             "diversity_is_not_collapsed_into_scalar_score": True,
             "hard_filters_are_wide_gate": True, "pains_brenk_are_soft_flags": True,
-            "distributed": {"nodes": 4, "workers_per_node": 32},
+            "distributed": _distributed_metadata(config),
             "elapsed_seconds": time.time() - float(plan["started"]),
         }
         shutil.rmtree(stage / "_distributed")
@@ -388,8 +398,10 @@ def _merge_score3d(config: dict, stage: Path, plan: dict) -> None:
         },
         "method": "All channels receive ETKDGv3 feasibility checks. Only configured PNU/Pharm2D channels receive Crippen O3A plus experimental 7LUF YE4 feature/shape/clash scoring; diversity and exploration are not rejected for PNU mismatch.",
         "not_docking": True,
-        "distributed": {"nodes": 4, "workers_per_node": 32,
-                        "rank_counts": [item["count"] for item in rank_summaries]},
+        "distributed": {
+            **_distributed_metadata(config),
+            "rank_counts": [item["count"] for item in rank_summaries],
+        },
         "elapsed_seconds": time.time() - float(plan["started"]),
         "versions": {"python": platform.python_version(),
                      "rdkit": rdBase.rdkitVersion, "numpy": np.__version__},
@@ -555,7 +567,7 @@ def _merge_ligands(config: dict, stage: Path, plan: dict) -> None:
         "protonation": plan["protonation"], "states_per_parent": {"1": parent_count},
         "embed_statuses": dict(statuses), "all_parents_represented": True,
         "single_state_policy": True,
-        "distributed": {"nodes": 4, "workers_per_node": 32},
+        "distributed": _distributed_metadata(config),
         "interpretation": "Exactly one state per parent: Open Babel pH adjustment, deterministic RDKit canonical tautomer selection, source stereochemistry preservation, and one ETKDGv3 starting conformer. This is a reproducible screening state, not a microscopic pKa population model.",
         "elapsed_seconds": time.time() - float(plan["started"]),
     }
@@ -729,7 +741,7 @@ def _merge_postdock(config: dict, stage: Path, plan: dict) -> None:
             "combined": self_score[0], "feature": self_score[1],
             "shape": self_score[2], "o3a": self_score[3],
         },
-        "distributed": {"nodes": 4, "workers_per_node": 32},
+        "distributed": _distributed_metadata(config),
         "output": str(output), "elapsed_seconds": time.time() - float(plan["started"]),
     }
     shutil.rmtree(stage / "_distributed")
@@ -770,7 +782,7 @@ def _run_docking_and_after(config: dict, context: RankContext) -> dict | None:
     if context.is_root:
         return {
             "status": "WAITING_FOR_EXTERNAL_AFFINITY",
-            "distributed": {"nodes": 4, "workers_per_node": 32, "total_workers": 128},
+            "distributed": _distributed_metadata(config, include_total=True),
             "preparation_qc": (
                 json.loads((root / "QC_REPORT.json").read_text(encoding="utf-8"))
                 if (root / "QC_REPORT.json").exists() else {}),
@@ -784,9 +796,11 @@ def _run_docking_and_after(config: dict, context: RankContext) -> dict | None:
 
 
 def run(config: dict, context: RankContext, mode: str) -> dict | None:
-    hosts = context.validate_unique_hosts()
+    hosts = context.validate_unique_hosts(config)
     if context.is_root:
-        context.log(f"validated 4-node layout: {', '.join(hosts)}")
+        context.log(
+            f"validated {int(config['distributed']['nodes'])}-node layout: "
+            f"{', '.join(hosts)}")
     if mode == "complete":
         _root_step(
             context, "references",

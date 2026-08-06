@@ -84,30 +84,53 @@ class DistributedRuntimeTests(unittest.TestCase):
     def setUpClass(cls):
         cls.config, _ = load_config(Path(__file__).parents[1] / "config/sample_10000.json")
 
-    def test_fixed_four_by_thirty_two_layout(self):
-        self.assertEqual(validate_layout(self.config, world_size=4), {
-            "nodes": 4, "workers_per_node": 32, "total_workers": 128,
+    def test_fixed_two_by_sixty_four_layout(self):
+        self.assertEqual(validate_layout(self.config, world_size=2), {
+            "nodes": 2, "workers_per_node": 64, "total_workers": 128,
         })
-        with self.assertRaisesRegex(ValueError, "exactly 4 MPI ranks"):
+        with self.assertRaisesRegex(ValueError, "exactly 2 MPI ranks"):
             validate_layout(self.config, world_size=3)
 
     def test_scheduler_allocation_is_not_mistaken_for_mpi_rank(self):
         self.assertEqual(distributed_identity({"SLURM_NTASKS": "128"}), (0, 1, 0))
         self.assertEqual(distributed_identity({
-            "OMPI_COMM_WORLD_RANK": "2", "OMPI_COMM_WORLD_SIZE": "4",
+            "OMPI_COMM_WORLD_RANK": "1", "OMPI_COMM_WORLD_SIZE": "2",
             "OMPI_COMM_WORLD_LOCAL_RANK": "0",
-        }), (2, 4, 0))
+        }), (1, 2, 0))
 
-    def test_launcher_maps_one_unbound_rank_per_node(self):
+    def test_launcher_maps_one_core_bound_rank_per_node(self):
         with patch("hsv_screen.distributed_runtime.shutil.which", return_value="/opt/mpi/bin/mpirun"):
             command = build_mpi_command(
                 self.config, Path("config/sample_10000.json"), "complete")
-        self.assertEqual(command[:3], ["/opt/mpi/bin/mpirun", "-np", "4"])
-        self.assertIn("ppr:1:node:PE=32", command)
+        self.assertEqual(command[:3], ["/opt/mpi/bin/mpirun", "-np", "2"])
+        self.assertIn("ppr:1:node:PE=64", command)
         self.assertIn("core", command)
         self.assertEqual(command[-2], "--config")
 
-    def test_four_rank_standardization_preserves_global_deduplication(self):
+    def test_two_unique_hosts_each_expose_64_cpus(self):
+        with tempfile.TemporaryDirectory() as temporary, patch(
+            "hsv_screen.distributed_runtime.os.sched_getaffinity",
+            return_value=set(range(64)),
+        ):
+            sync = Path(temporary) / "sync"
+            contexts = [RankContext(
+                rank=rank, size=2, local_rank=0, hostname=f"node{rank}",
+                run_id="host_test", sync_dir=sync, timeout_seconds=10,
+                poll_seconds=0.01,
+            ) for rank in range(2)]
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                results = list(executor.map(
+                    lambda context: context.validate_unique_hosts(self.config),
+                    contexts,
+                ))
+            self.assertEqual(results, [["node0", "node1"], ["node0", "node1"]])
+            layout = json.loads((sync / "host_layout.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                [record["available_cpus"] for record in layout["records"]],
+                [64, 64],
+            )
+
+    def test_two_rank_standardization_preserves_global_deduplication(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             data = root / "data"
@@ -138,11 +161,11 @@ class DistributedRuntimeTests(unittest.TestCase):
             }
             sync = root / "sync"
             contexts = [RankContext(
-                rank=rank, size=4, local_rank=0, hostname=f"node{rank}",
-                run_id="test", sync_dir=sync, timeout_seconds=20,
+                rank=rank, size=2, local_rank=0, hostname=f"node{rank}",
+                run_id="test", sync_dir=sync, timeout_seconds=60,
                 poll_seconds=0.01,
-            ) for rank in range(4)]
-            with ThreadPoolExecutor(max_workers=4) as executor:
+            ) for rank in range(2)]
+            with ThreadPoolExecutor(max_workers=2) as executor:
                 futures = [executor.submit(run_standardize, config, context)
                            for context in contexts]
                 for future in futures:
@@ -163,11 +186,11 @@ class DistributedRuntimeTests(unittest.TestCase):
                                 for row in candidate_ethanol))
             score_sync = root / "score_sync"
             score_contexts = [RankContext(
-                rank=rank, size=4, local_rank=0, hostname=f"node{rank}",
-                run_id="score_test", sync_dir=score_sync, timeout_seconds=20,
+                rank=rank, size=2, local_rank=0, hostname=f"node{rank}",
+                run_id="score_test", sync_dir=score_sync, timeout_seconds=60,
                 poll_seconds=0.01,
-            ) for rank in range(4)]
-            with ThreadPoolExecutor(max_workers=4) as executor:
+            ) for rank in range(2)]
+            with ThreadPoolExecutor(max_workers=2) as executor:
                 futures = [executor.submit(run_score2d, config, context)
                            for context in score_contexts]
                 for future in futures:
@@ -177,7 +200,7 @@ class DistributedRuntimeTests(unittest.TestCase):
                     encoding="utf-8"))
             self.assertEqual(score_summary["counts"]["scored"], 5)
             self.assertEqual(score_summary["distributed"], {
-                "nodes": 4, "workers_per_node": 32,
+                "nodes": 2, "workers_per_node": 64,
             })
 
 
@@ -231,10 +254,10 @@ class ReferenceAndQuotaTests(unittest.TestCase):
         self.assertEqual(final["unlabeled_count"], 167)
         protocol = self.config["docking"]["protocols"][0]
         self.assertEqual(protocol["scope"]["max_parents"], 0)
-        self.assertEqual(self.config["workers"], 32)
-        self.assertEqual(self.config["distributed"]["nodes"], 4)
-        self.assertEqual(self.config["distributed"]["workers_per_node"], 32)
-        self.assertEqual(self.config["docking"]["parallel_jobs_per_node"], 32)
+        self.assertEqual(self.config["workers"], 64)
+        self.assertEqual(self.config["distributed"]["nodes"], 2)
+        self.assertEqual(self.config["distributed"]["workers_per_node"], 64)
+        self.assertEqual(self.config["docking"]["parallel_jobs_per_node"], 64)
 
     def test_one_ph_adjusted_state_per_parent(self):
         row = {

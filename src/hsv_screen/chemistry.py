@@ -180,14 +180,14 @@ SCORE_STATE: dict[str, object] = {}
 
 def init_score_worker(ref_smiles: str, fp_settings: dict, filters: dict,
                       evidence_settings: dict | None = None) -> None:
+    global SCORE_STATE
     RDLogger.DisableLog("rdApp.*")
     ref = Chem.MolFromSmiles(ref_smiles)
     morgan = rdFingerprintGenerator.GetMorganGenerator(radius=int(fp_settings["radius"]), fpSize=int(fp_settings["n_bits"]))
     feature = rdFingerprintGenerator.GetMorganGenerator(
         radius=int(fp_settings["radius"]), fpSize=int(fp_settings["n_bits"]),
         atomInvariantsGenerator=rdFingerprintGenerator.GetMorganFeatureAtomInvGen())
-    SCORE_STATE.clear()
-    SCORE_STATE.update({
+    SCORE_STATE = {
         "filters": filters, "morgan": morgan, "feature": feature,
         "ref_ecfp": morgan.GetFingerprint(ref), "ref_fcfp": feature.GetFingerprint(ref),
         "ref_pharm": Generate.Gen2DFingerprint(ref, Gobbi_Pharm2D.factory),
@@ -195,7 +195,7 @@ def init_score_worker(ref_smiles: str, fp_settings: dict, filters: dict,
         "brenk": make_filter_catalog(FilterCatalog.FilterCatalogParams.FilterCatalogs.BRENK),
         "evidence_weights": (evidence_settings or {}).get(
             "weights", {"pnu_consensus": 0.65, "quality_score": 0.35}),
-    })
+    }
 
 
 def scaffold_for(mol: Chem.Mol, structure_key: str) -> str:

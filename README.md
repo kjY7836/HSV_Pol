@@ -123,18 +123,18 @@ bash scripts/run_smina.sh
 bash scripts/run_score.sh
 ```
 
-当前固定使用4个CPU节点、每节点32核，总计128核。`run_full.sh`和`run_smina.sh`仍只有一条
-Python命令；Python入口会调用系统`mpirun -np 4 --map-by ppr:1:node:PE=32 --bind-to core`，在每个节点启动一个
-协调rank，再由每个rank创建32个本地工作进程。Smina每节点并发32个任务，每个任务`cpu=1`。
+当前固定使用2个CPU节点、每节点64个物理核，总计128核。`run_full.sh`和`run_smina.sh`仍只有一条
+Python命令；Python入口会调用系统`mpirun -np 2 --map-by ppr:1:node:PE=64 --bind-to core`，在每个节点启动一个
+协调rank，再由每个rank创建64个本地工作进程。Smina每节点并发64个任务，每个任务`cpu=1`。
 
 应通过调度器申请资源，不能在登录节点直接运行全量流程。提交文件示例：
 
 ```bash
 #!/bin/bash
 #JSUB -J hsv-pol-full
-#JSUB -q cpu_x86
+#JSUB -q cpu_x86fat
 #JSUB -n 128
-#JSUB -R "span[ptile=32]"
+#JSUB -R "span[ptile=64]"
 #JSUB -o output.%J
 #JSUB -e error.%J
 
@@ -144,9 +144,10 @@ cd /目标路径/HSV_Pol/full_library_screening
 bash scripts/run_full.sh
 ```
 
-程序会验证必须正好出现4个不同主机名；如果MPI把多个rank放到同一节点，会在开始计算前失败。
+程序会验证必须正好出现2个不同主机名，且每个rank能访问至少64个CPU；如果MPI把两个rank放到
+同一节点或CPU亲和集不足，会在开始计算前失败。
 所有节点必须能以相同路径访问仓库、`../data`、Conda-pack解压环境和`runs/`共享目录。标准化、
-2D、20万3D、构象生成、Smina和Docking后3D均分片到4节点；配额选择、去重归并、SDF汇总和
+2D、20万3D、构象生成、Smina和Docking后3D均分片到2节点；配额选择、去重归并、SDF汇总和
 affinity输入包由rank 0执行。任何已调度分子没有产生Smina pose都会直接报错。
 
 ## Affinity 模型交付

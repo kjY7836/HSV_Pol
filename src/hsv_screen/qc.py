@@ -6,7 +6,11 @@ from pathlib import Path
 
 from rdkit import Chem
 
-from .config import resolve_path
+from .config import (
+    REQUIRED_DISTRIBUTED_NODES,
+    REQUIRED_WORKERS_PER_NODE,
+    resolve_path,
+)
 from .io_utils import atomic_json, iter_csv
 from .reference import validate_and_prepare
 
@@ -28,10 +32,12 @@ def run(config: dict) -> dict:
         "smina_jobs_per_node": config.get("docking", {}).get("parallel_jobs_per_node"),
     }
     check(
-        "four_nodes_32_workers_each",
+        "two_nodes_64_workers_each",
         distributed_detail == {
-            "nodes": 4, "workers_per_node": 32, "local_workers": 32,
-            "smina_jobs_per_node": 32,
+            "nodes": REQUIRED_DISTRIBUTED_NODES,
+            "workers_per_node": REQUIRED_WORKERS_PER_NODE,
+            "local_workers": REQUIRED_WORKERS_PER_NODE,
+            "smina_jobs_per_node": REQUIRED_WORKERS_PER_NODE,
         }, distributed_detail)
 
     reference = validate_and_prepare(config, prepare_pdbqt=False)
