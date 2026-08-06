@@ -33,12 +33,10 @@ def _score_file(input_path: Path, output_path: Path, config: dict, counters: Cou
     with gzip.open(partial, "wt", encoding="utf-8", newline="", compresslevel=3) as handle:
         writer = csv.DictWriter(handle, fieldnames=SCORED_FIELDS, extrasaction="ignore")
         writer.writeheader()
-        with mp.Pool(
-            int(config["workers"]), initializer=init_score_worker,
-            initargs=(PNU_SMILES, config["fingerprint"], config["filters"],
-                      config["integrated_scoring"]["predocking"]),
-        ) as pool:
-            for result in pool.imap(score_parent, iter_csv(input_path), chunksize=128):
+        worker_count = int(config["workers"])
+
+        def consume(results) -> None:
+            for result in results:
                 counters["input_parents"] += 1
                 if result is None:
                     counters["invalid"] += 1
@@ -52,6 +50,18 @@ def _score_file(input_path: Path, output_path: Path, config: dict, counters: Cou
                 if counters["input_parents"] % 100000 == 0:
                     elapsed = max(time.time() - started, 1e-6)
                     print(f"[2d] {counters['input_parents']:,} parents; {counters['input_parents']/elapsed:,.0f}/s", flush=True)
+        init_args = (
+            PNU_SMILES, config["fingerprint"], config["filters"],
+            config["integrated_scoring"]["predocking"],
+        )
+        if worker_count <= 1:
+            init_score_worker(*init_args)
+            consume(map(score_parent, iter_csv(input_path)))
+        else:
+            with mp.Pool(
+                    worker_count, initializer=init_score_worker,
+                    initargs=init_args) as pool:
+                consume(pool.imap(score_parent, iter_csv(input_path), chunksize=128))
     os.replace(partial, output_path)
 
 

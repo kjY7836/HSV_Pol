@@ -201,8 +201,39 @@ def collect(config: dict, force: bool = False) -> dict:
     if missing_outputs:
         raise FileNotFoundError(
             f"{len(missing_outputs)} expected Smina outputs are missing; first: {missing_outputs[0]}")
+    expected_states: dict[str, set[str]] = {protocol_id: set() for protocol_id in protocols}
+    for row in expected_jobs:
+        ligand_path = Path(row.get("ligands", ""))
+        if not ligand_path.is_file():
+            raise FileNotFoundError(f"Smina input chunk is missing: {ligand_path}")
+        protocol_id = row["protocol_id"]
+        for record_index, mol in enumerate(
+                Chem.SDMolSupplier(str(ligand_path), removeHs=False), start=1):
+            if mol is None:
+                raise ValueError(
+                    f"Invalid Smina input record {record_index} in {ligand_path}")
+            state_id = (mol.GetProp("state_id") if mol.HasProp("state_id")
+                        else (mol.GetProp("_Name") if mol.HasProp("_Name") else ""))
+            if not state_id or state_id not in state_metadata:
+                raise ValueError(
+                    f"Untraceable Smina input state {state_id!r} in {ligand_path}")
+            if state_id in expected_states[protocol_id]:
+                raise ValueError(
+                    f"State {state_id} is scheduled more than once for protocol {protocol_id}")
+            expected_states[protocol_id].add(state_id)
+    required_protocols = set(config["docking"].get("production_required_protocols", []))
+    for protocol_id in required_protocols:
+        missing_from_schedule = set(state_metadata) - expected_states.get(protocol_id, set())
+        if missing_from_schedule:
+            raise ValueError(
+                f"Required protocol {protocol_id} did not schedule "
+                f"{len(missing_from_schedule)} embedded states; "
+                f"first={sorted(missing_from_schedule)[0]}")
     rows: list[dict] = []
     counts: Counter[str] = Counter()
+    observed_states: dict[str, set[str]] = {protocol_id: set() for protocol_id in protocols}
+    pose_counts: dict[str, Counter[str]] = {
+        protocol_id: Counter() for protocol_id in protocols}
     consolidated = stage / "docked_poses.sdf"
     consolidated_partial = Path(str(consolidated) + ".partial")
     pose_writer = Chem.SDWriter(str(consolidated_partial))
@@ -213,7 +244,6 @@ def collect(config: dict, force: bool = False) -> dict:
             # files must never leak into a new affinity input set.
             files = sorted(jobs_by_protocol[protocol_id])
             for path in files:
-                state_pose_counts: Counter[str] = Counter()
                 for source_record_index, mol in enumerate(
                         Chem.SDMolSupplier(str(path), removeHs=False), start=1):
                     if mol is None:
@@ -225,8 +255,12 @@ def collect(config: dict, force: bool = False) -> dict:
                               else (metadata or {}).get("parent_structure_key", ""))
                     if not state_id or not parent:
                         raise ValueError(f"Docked pose in {path} lacks state/parent traceability")
-                    state_pose_counts[state_id] += 1
-                    pose_rank = state_pose_counts[state_id]
+                    if state_id not in expected_states[protocol_id]:
+                        raise ValueError(
+                            f"Smina output contains unscheduled state {state_id} for {protocol_id}")
+                    observed_states[protocol_id].add(state_id)
+                    pose_counts[protocol_id][state_id] += 1
+                    pose_rank = pose_counts[protocol_id][state_id]
                     pose_id = f"{protocol_id}|{state_id}|{pose_rank}"
                     ligand_record_index += 1
                     receptor_pdb = str(resolve_path(config, protocol["receptor_pdb"]))
@@ -256,6 +290,17 @@ def collect(config: dict, force: bool = False) -> dict:
                     counts[protocol_id] += 1
     finally:
         pose_writer.close()
+    missing_states = {
+        protocol_id: sorted(expected_states[protocol_id] - observed_states[protocol_id])
+        for protocol_id in protocols
+        if expected_states[protocol_id] - observed_states[protocol_id]
+    }
+    if missing_states:
+        consolidated_partial.unlink(missing_ok=True)
+        first_protocol = sorted(missing_states)[0]
+        raise ValueError(
+            f"Smina produced no pose for {sum(map(len, missing_states.values()))} scheduled "
+            f"states; first={first_protocol}:{missing_states[first_protocol][0]}")
     if not rows:
         consolidated_partial.unlink(missing_ok=True)
         raise FileNotFoundError("No completed Smina output SDF files were found")
@@ -265,6 +310,11 @@ def collect(config: dict, force: bool = False) -> dict:
     summary = {
         "stage": "collect_docking", "pose_count": len(rows),
         "completed_job_count": len(expected_jobs), "protocol_pose_counts": dict(counts),
+        "scheduled_state_counts": {
+            protocol_id: len(states) for protocol_id, states in expected_states.items()},
+        "observed_state_counts": {
+            protocol_id: len(states) for protocol_id, states in observed_states.items()},
+        "all_scheduled_states_have_poses": True,
         "docking_poses": str(output),
         "consolidated_pose_sdf": str(consolidated),
         "affinity_handoff": "Run prepare-affinity after postdock3d to create the standalone receptor/ligand structure package and blank prediction table.",

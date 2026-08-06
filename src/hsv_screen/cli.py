@@ -5,9 +5,11 @@ import json
 import shutil
 from pathlib import Path
 
-from . import affinity_input, docking, execution, final_select, ligands, postdock3d, prescreen_pool, qc, scoring, screen2d, screen3d, standardize
+from . import affinity_input, docking, final_select, ligands, postdock3d, prescreen_pool, qc, scoring, screen2d, screen3d, standardize
 from .config import load_config, resolve_path
 from .reference import validate_and_prepare
+from .distributed_pipeline import run as run_distributed_pipeline
+from .distributed_runtime import launch as launch_distributed
 
 
 STAGES = {
@@ -43,13 +45,9 @@ def main() -> None:
     if args.command == "qc":
         result = qc.run(config)
     elif args.command == "complete":
-        if int(config["workers"]) != 64:
-            raise ValueError(f"This workflow requires workers=64, found {config['workers']}")
-        preparation = execution.prepare_pipeline(config)
-        result = execution.run_smina_and_postprocess(config)
-        result["preparation_qc"] = preparation
+        result = launch_distributed(args.config, "complete", run_distributed_pipeline)
     elif args.command == "smina":
-        result = execution.run_smina_and_postprocess(config)
+        result = launch_distributed(args.config, "smina", run_distributed_pipeline)
     elif args.command == "collect-docking":
         result = docking.collect(config, args.force)
     elif args.command == "postdock3d":
@@ -66,7 +64,8 @@ def main() -> None:
         result = qc.run(config)
     else:
         result = STAGES[args.command](config, args.force)
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if result is not None:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
 
 
 if __name__ == "__main__":

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import csv
+import json
 import tempfile
 import unittest
 from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import patch
 
 from rdkit import Chem
 from rdkit.Chem import AllChem
@@ -13,6 +16,11 @@ from hsv_screen.affinity_input import run as run_affinity_input
 from hsv_screen.chemistry import classify_and_standardize, hard_filter_reasons, score_reference_self
 from hsv_screen.config import load_config
 from hsv_screen.docking import collect
+from hsv_screen.distributed_runtime import (
+    RankContext, build_mpi_command, distributed_identity, validate_layout,
+)
+from hsv_screen.distributed_pipeline import run_score2d, run_standardize
+from hsv_screen.io_utils import iter_csv
 from hsv_screen.ligands import _generate_task
 from hsv_screen.postdock3d import run as run_postdock3d
 from hsv_screen.prescreen_pool import fraction_quotas, select_source
@@ -71,6 +79,108 @@ class ChemistryTests(unittest.TestCase):
         self.assertIn("mw_low", reasons)
 
 
+class DistributedRuntimeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.config, _ = load_config(Path(__file__).parents[1] / "config/sample_10000.json")
+
+    def test_fixed_four_by_thirty_two_layout(self):
+        self.assertEqual(validate_layout(self.config, world_size=4), {
+            "nodes": 4, "workers_per_node": 32, "total_workers": 128,
+        })
+        with self.assertRaisesRegex(ValueError, "exactly 4 MPI ranks"):
+            validate_layout(self.config, world_size=3)
+
+    def test_scheduler_allocation_is_not_mistaken_for_mpi_rank(self):
+        self.assertEqual(distributed_identity({"SLURM_NTASKS": "128"}), (0, 1, 0))
+        self.assertEqual(distributed_identity({
+            "OMPI_COMM_WORLD_RANK": "2", "OMPI_COMM_WORLD_SIZE": "4",
+            "OMPI_COMM_WORLD_LOCAL_RANK": "0",
+        }), (2, 4, 0))
+
+    def test_launcher_maps_one_unbound_rank_per_node(self):
+        with patch("hsv_screen.distributed_runtime.shutil.which", return_value="/opt/mpi/bin/mpirun"):
+            command = build_mpi_command(
+                self.config, Path("config/sample_10000.json"), "complete")
+        self.assertEqual(command[:3], ["/opt/mpi/bin/mpirun", "-np", "4"])
+        self.assertIn("ppr:1:node:PE=32", command)
+        self.assertIn("core", command)
+        self.assertEqual(command[-2], "--config")
+
+    def test_four_rank_standardization_preserves_global_deduplication(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data = root / "data"
+            data.mkdir()
+
+            def write_source(path: Path, rows: list[tuple[str, str]]) -> None:
+                with path.open("w", encoding="utf-8", newline="") as handle:
+                    writer = csv.writer(handle)
+                    writer.writerow(["ID", "SMILES"])
+                    writer.writerows(rows)
+
+            write_source(data / "activity_2w.csv", [("a", "CCO")])
+            candidate_rows = [
+                [("u1", "CCO"), ("u2", "CCN")],
+                [("u3", "CCN"), ("u4", "CCC")],
+                [("u5", "c1ccccc1"), ("u6", "CCO")],
+                [("u7", "CCCl"), ("u8", "CCC")],
+            ]
+            for index, rows in enumerate(candidate_rows, start=1):
+                write_source(data / f"candidate_{index}.csv", rows)
+
+            config = deepcopy(self.config)
+            config["workers"] = 1
+            config["data_dir"] = str(data)
+            config["output_dir"] = str(root / "run")
+            config["sample"] = {
+                "enabled": False, "active_records": 0, "candidate_records": 0,
+            }
+            sync = root / "sync"
+            contexts = [RankContext(
+                rank=rank, size=4, local_rank=0, hostname=f"node{rank}",
+                run_id="test", sync_dir=sync, timeout_seconds=20,
+                poll_seconds=0.01,
+            ) for rank in range(4)]
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = [executor.submit(run_standardize, config, context)
+                           for context in contexts]
+                for future in futures:
+                    future.result()
+
+            stage = root / "run" / "01_standardized"
+            summary = json.loads((stage / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["counts"]["input_records"], 9)
+            self.assertEqual(summary["exact_parent_count"], 5)
+            mapping = list(iter_csv(stage / "parent_mapping.csv.gz"))
+            candidate_ethanol = [row for row in mapping
+                                  if row["source_pool"] == "unlabeled"
+                                  and row["original_smiles"] == "CCO"]
+            self.assertEqual(len(candidate_ethanol), 2)
+            self.assertTrue(all(row["dedup_status"] == "exact_duplicate"
+                                for row in candidate_ethanol))
+            self.assertTrue(all(row["resolved_source_pool"] == "activity_recorded"
+                                for row in candidate_ethanol))
+            score_sync = root / "score_sync"
+            score_contexts = [RankContext(
+                rank=rank, size=4, local_rank=0, hostname=f"node{rank}",
+                run_id="score_test", sync_dir=score_sync, timeout_seconds=20,
+                poll_seconds=0.01,
+            ) for rank in range(4)]
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = [executor.submit(run_score2d, config, context)
+                           for context in score_contexts]
+                for future in futures:
+                    future.result()
+            score_summary = json.loads(
+                (root / "run" / "02_2d_scored" / "summary.json").read_text(
+                    encoding="utf-8"))
+            self.assertEqual(score_summary["counts"]["scored"], 5)
+            self.assertEqual(score_summary["distributed"], {
+                "nodes": 4, "workers_per_node": 32,
+            })
+
+
 class ReferenceAndQuotaTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -121,8 +231,10 @@ class ReferenceAndQuotaTests(unittest.TestCase):
         self.assertEqual(final["unlabeled_count"], 167)
         protocol = self.config["docking"]["protocols"][0]
         self.assertEqual(protocol["scope"]["max_parents"], 0)
-        self.assertEqual(self.config["workers"], 64)
-        self.assertEqual(self.config["docking"]["parallel_jobs"], 64)
+        self.assertEqual(self.config["workers"], 32)
+        self.assertEqual(self.config["distributed"]["nodes"], 4)
+        self.assertEqual(self.config["distributed"]["workers_per_node"], 32)
+        self.assertEqual(self.config["docking"]["parallel_jobs_per_node"], 32)
 
     def test_one_ph_adjusted_state_per_parent(self):
         row = {
@@ -333,17 +445,30 @@ class DockingCollectionTests(unittest.TestCase):
             writer.write(mol)
             writer.close()
 
-            jobs_dir = root / "07_smina"
+            ligand_input = jobs_dir = root / "07_smina"
+            ligand_input.mkdir(parents=True, exist_ok=True)
+            ligand_input = ligand_input / "ligands_00001.sdf"
+            input_mol = Chem.Mol(mol)
+            input_mol.SetProp("state_id", "state_001")
+            input_writer = Chem.SDWriter(str(ligand_input))
+            input_writer.write(input_mol)
+            input_writer.close()
+
             with (jobs_dir / "jobs.tsv").open("w", encoding="utf-8", newline="") as handle:
-                writer = csv.DictWriter(handle, fieldnames=["protocol_id", "output"], delimiter="\t")
+                writer = csv.DictWriter(
+                    handle, fieldnames=["protocol_id", "ligands", "output"], delimiter="\t")
                 writer.writeheader()
-                writer.writerow({"protocol_id": "8v1q_open_wt", "output": str(docked_path)})
+                writer.writerow({
+                    "protocol_id": "8v1q_open_wt", "ligands": str(ligand_input),
+                    "output": str(docked_path),
+                })
 
             config = deepcopy(self.config)
             config["output_dir"] = str(root)
             config["workers"] = 1
             summary = collect(config, force=True)
             self.assertEqual(summary["pose_count"], 1)
+            self.assertTrue(summary["all_scheduled_states_have_poses"])
             consolidated = Path(summary["consolidated_pose_sdf"])
             pose = next(m for m in Chem.SDMolSupplier(str(consolidated), removeHs=False) if m)
             self.assertEqual(pose.GetProp("_Name"), "8v1q_open_wt|state_001|1")
@@ -377,6 +502,28 @@ class DockingCollectionTests(unittest.TestCase):
             self.assertNotIn("pose_quality", affinity_row)
             self.assertNotIn("ligand_efficiency", affinity_row)
             self.assertNotIn("chemical_quality", affinity_row)
+
+            with (states_dir / "ligand_states.csv").open(
+                    "a", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=[
+                    "state_id", "parent_structure_key", "compound_id", "source_pool",
+                    "selection_channel", "state_smiles", "embed_status",
+                ])
+                writer.writerow({
+                    "state_id": "state_002", "parent_structure_key": "parent_002",
+                    "compound_id": "compound_002", "source_pool": "unlabeled",
+                    "selection_channel": "diversity", "state_smiles": "CCN",
+                    "embed_status": "ok",
+                })
+            second = Chem.Mol(mol)
+            second.SetProp("state_id", "state_002")
+            second.SetProp("_Name", "state_002")
+            input_writer = Chem.SDWriter(str(ligand_input))
+            input_writer.write(input_mol)
+            input_writer.write(second)
+            input_writer.close()
+            with self.assertRaisesRegex(ValueError, "produced no pose"):
+                collect(config, force=True)
 
 
 if __name__ == "__main__":

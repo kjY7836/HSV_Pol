@@ -9,6 +9,7 @@ htmlcov/
 # Environments and editors
 .venv/
 venv/
+*.tar.gz
 .idea/
 .vscode/
 *.swp

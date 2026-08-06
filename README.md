@@ -93,7 +93,8 @@ conda activate mpgforamp
 cd /mnt/sda/ykj/HSV_Pol/full_library_screening
 ```
 
-运行依赖包括 Python 3.10+、RDKit、NumPy、Pandas、SciPy、Open Babel 和 Smina。当前 Smina
+运行依赖包括 Python 3.10+、RDKit、NumPy、Pandas、SciPy、Open Babel 和 Smina。多节点
+协调不依赖`mpi4py`，但提交作业后必须由平台的`module load mpi`提供`mpirun`。当前 Smina
 默认位置为：
 
 ```text
@@ -122,10 +123,31 @@ bash scripts/run_smina.sh
 bash scripts/run_score.sh
 ```
 
-`workers=64`，Smina使用64个并发任务且每个任务`cpu=1`，因此应为作业申请至少64个CPU核。
-Smina优先从当前Python解释器所在环境查找，例如激活`mpgforamp`后运行上述命令。当前实现是
-单节点64核模式；跨CPU节点仍需将`jobs.tsv`按行分片给作业数组或MPI调度器，不能直接对
-完整脚本运行多个MPI rank。
+当前固定使用4个CPU节点、每节点32核，总计128核。`run_full.sh`和`run_smina.sh`仍只有一条
+Python命令；Python入口会调用系统`mpirun -np 4 --map-by ppr:1:node:PE=32 --bind-to core`，在每个节点启动一个
+协调rank，再由每个rank创建32个本地工作进程。Smina每节点并发32个任务，每个任务`cpu=1`。
+
+应通过调度器申请资源，不能在登录节点直接运行全量流程。提交文件示例：
+
+```bash
+#!/bin/bash
+#JSUB -J hsv-pol-full
+#JSUB -q cpu_x86
+#JSUB -n 128
+#JSUB -R "span[ptile=32]"
+#JSUB -o output.%J
+#JSUB -e error.%J
+
+module load mpi
+source /目标路径/envs/mpgforamp/bin/activate
+cd /目标路径/HSV_Pol/full_library_screening
+bash scripts/run_full.sh
+```
+
+程序会验证必须正好出现4个不同主机名；如果MPI把多个rank放到同一节点，会在开始计算前失败。
+所有节点必须能以相同路径访问仓库、`../data`、Conda-pack解压环境和`runs/`共享目录。标准化、
+2D、20万3D、构象生成、Smina和Docking后3D均分片到4节点；配额选择、去重归并、SDF汇总和
+affinity输入包由rank 0执行。任何已调度分子没有产生Smina pose都会直接报错。
 
 ## Affinity 模型交付
 

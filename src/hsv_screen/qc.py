@@ -20,6 +20,20 @@ def run(config: dict) -> dict:
         if not condition:
             raise AssertionError(f"QC failed: {name}: {detail}")
 
+    distributed = config.get("distributed", {})
+    distributed_detail = {
+        "nodes": distributed.get("nodes"),
+        "workers_per_node": distributed.get("workers_per_node"),
+        "local_workers": config.get("workers"),
+        "smina_jobs_per_node": config.get("docking", {}).get("parallel_jobs_per_node"),
+    }
+    check(
+        "four_nodes_32_workers_each",
+        distributed_detail == {
+            "nodes": 4, "workers_per_node": 32, "local_workers": 32,
+            "smina_jobs_per_node": 32,
+        }, distributed_detail)
+
     reference = validate_and_prepare(config, prepare_pdbqt=False)
     check("reference_bound_instance", reference["ligand_instances"].get("C:1201") == 30, reference["ligand_instances"])
     check("target_structures_are_h9e937", all(
