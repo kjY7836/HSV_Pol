@@ -15,7 +15,7 @@ from rdkit.Chem import AllChem
 from rdkit.Chem.MolStandardize import rdMolStandardize
 
 from .config import resolve_path
-from .io_utils import atomic_json, prepare_stage_dir
+from .io_utils import atomic_csv, atomic_json, prepare_stage_dir
 
 
 STATE_FIELDS = ["parent_structure_key", "compound_id", "source_pool", "selection_channel",
@@ -175,9 +175,9 @@ def run(config: dict, force: bool = False) -> dict:
     csv_partial, sdf_partial = Path(str(csv_path) + ".partial"), Path(str(sdf_path) + ".partial")
     state_count = 0
     proposal_count = 0
-    parent_states = Counter()
     state_ids = set()
     statuses = Counter()
+    failed_states: list[dict] = []
     with csv_partial.open("w", encoding="utf-8", newline="") as csv_handle, sdf_partial.open("w", encoding="utf-8") as sdf_handle:
         writer = csv.DictWriter(csv_handle, fieldnames=STATE_FIELDS)
         writer.writeheader()
@@ -188,31 +188,46 @@ def run(config: dict, force: bool = False) -> dict:
                     if metadata["state_id"] in state_ids:
                         raise AssertionError(f"Duplicate state ID {metadata['state_id']}")
                     state_ids.add(metadata["state_id"])
-                    writer.writerow(metadata)
                     proposal_count += 1
                     statuses[metadata["embed_status"]] += 1
                     if metadata["embed_status"].startswith("ok"):
+                        writer.writerow(metadata)
                         sdf_handle.write(mol_block)
                         for key, value in metadata.items():
                             sdf_handle.write(f">  <{key}>\n{value}\n\n")
                         sdf_handle.write("$$$$\n")
                         state_count += 1
-                        parent_states[parent_key] += 1
+                    else:
+                        failed_states.append(metadata)
                 if count % 1000 == 0:
                     print(f"[ligands] {count:,}/{len(parents):,} parents; {state_count:,} states", flush=True)
     os.replace(csv_partial, csv_path)
     os.replace(sdf_partial, sdf_path)
-    missing = [row["structure_key"] for row in parents if parent_states[row["structure_key"]] < 1]
-    if missing:
-        raise AssertionError(f"{len(missing)} parents have no generated ligand state")
+    if proposal_count != len(parents) or state_count + len(failed_states) != len(parents):
+        raise AssertionError(
+            f"Ligand-state accounting failed: parents={len(parents)}, "
+            f"proposals={proposal_count}, embedded={state_count}, "
+            f"failed={len(failed_states)}")
+    failure_path = stage / "ligand_state_failures.csv"
+    if failed_states:
+        atomic_csv(failure_path, failed_states, STATE_FIELDS)
+    states_per_parent = {"1": state_count}
+    if failed_states:
+        states_per_parent["0"] = len(failed_states)
     summary = {
         "stage": "ligand_states", "parent_count": len(parents), "state_count": state_count,
-        "state_proposal_count": proposal_count, "failed_state_proposals": proposal_count - state_count,
+        "dockable_parent_count": state_count,
+        "excluded_parent_count": len(failed_states),
+        "state_proposal_count": proposal_count,
+        "failed_state_proposals": len(failed_states),
+        "ligand_state_failure_report": str(failure_path) if failed_states else None,
+        "embedding_failure_policy": config["ligand_states"]["embedding_failure_policy"],
         "protonation": protonation,
-        "states_per_parent": dict(Counter(parent_states.values())), "embed_statuses": dict(statuses),
-        "all_parents_represented": True,
+        "states_per_parent": states_per_parent, "embed_statuses": dict(statuses),
+        "all_parents_represented": not failed_states,
+        "all_dockable_parents_represented": True,
         "single_state_policy": True,
-        "interpretation": "Exactly one state per parent: Open Babel pH adjustment, deterministic RDKit canonical tautomer selection, source stereochemistry preservation, and one ETKDGv3 starting conformer. This is a reproducible screening state, not a microscopic pKa population model.",
+        "interpretation": "At most one state per selected parent: Open Babel pH adjustment, deterministic RDKit canonical tautomer selection, source stereochemistry preservation, and one ETKDGv3 starting conformer. Parents that fail verified 3D embedding are excluded with a traceable failure report. This is a reproducible screening state, not a microscopic pKa population model.",
         "elapsed_seconds": time.time() - started,
     }
     atomic_json(done, summary)

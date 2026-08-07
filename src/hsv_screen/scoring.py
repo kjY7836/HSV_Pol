@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import os
 from collections import defaultdict
 from pathlib import Path
 
@@ -11,10 +12,12 @@ from .io_utils import atomic_csv, atomic_json, prepare_stage_dir
 
 
 OUTPUT_FIELDS = [
-    "rank", "parent_structure_key", "compound_id", "source_pool", "selection_channel",
+    "rank", "parent_structure_key", "compound_id", "standardized_smiles",
+    "source_pool", "selection_channel",
     "integrated_score", "wt_affinity", "postdock_3d_similarity",
     "docking_consensus", "qed", "wt_protocol_count", "affinity_pose_count",
 ]
+TOP_HIT_FIELDS = ["hit_id", "SMILES", "Rank", "score"]
 
 
 def _float(row: dict, key: str, default: float | None = None) -> float:
@@ -217,6 +220,7 @@ def aggregate_scores(parents: list[dict], docking_rows: list[dict], affinity_row
         integrated = 100.0 * max(0.0, min(1.0, base))
         output.append({
             "parent_structure_key": parent_key, "compound_id": parent.get("compound_id", ""),
+            "standardized_smiles": parent.get("standardized_smiles", ""),
             "source_pool": parent.get("source_pool", ""),
             "selection_channel": parent.get("selection_channel", ""),
             "integrated_score": integrated, **components,
@@ -249,7 +253,38 @@ def _read_csv(path: Path) -> list[dict]:
         return list(csv.DictReader(handle))
 
 
-def run(config: dict, force: bool = False, profile: str = "wt") -> dict:
+def top_hit_rows(ranked_rows: list[dict], limit: int = 200) -> list[dict]:
+    if limit <= 0:
+        raise ValueError("Top-hit limit must be positive")
+    hits = []
+    for row in ranked_rows[:limit]:
+        hit_id = str(row.get("compound_id", "") or row["parent_structure_key"])
+        smiles = str(row.get("standardized_smiles", ""))
+        if not smiles:
+            raise ValueError(f"Top-ranked compound {hit_id} lacks standardized_smiles")
+        hits.append({
+            "hit_id": hit_id,
+            "SMILES": smiles,
+            "Rank": int(row["rank"]),
+            "score": f"{float(row['integrated_score']):.8f}",
+        })
+    return hits
+
+
+def _atomic_tsv(path: Path, rows: list[dict]) -> None:
+    partial = Path(str(path) + ".partial")
+    with partial.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle, fieldnames=TOP_HIT_FIELDS, delimiter="\t", lineterminator="\n"
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+    os.replace(partial, path)
+
+
+def run(config: dict, force: bool = False, profile: str = "wt", top_n: int = 200) -> dict:
+    if top_n <= 0:
+        raise ValueError("top_n must be positive")
     root = resolve_path(config, config["output_dir"])
     stage = root / "11_integrated_scoring" / profile
     done = stage / "summary.json"
@@ -280,6 +315,13 @@ def run(config: dict, force: bool = False, profile: str = "wt") -> dict:
         _read_csv(similarity_path) if similarity_path.exists() else None)
     output = stage / "ranked_parents.csv"
     atomic_csv(output, rows, OUTPUT_FIELDS)
-    summary = {"stage": "integrated_scoring", **diagnostics, "output": str(output)}
+    top_hits = stage / f"top_{top_n}_hits.tsv"
+    hits = top_hit_rows(rows, top_n)
+    _atomic_tsv(top_hits, hits)
+    summary = {
+        "stage": "integrated_scoring", **diagnostics,
+        "output": str(output), "top_n": top_n,
+        "top_hit_count": len(hits), "top_hits": str(top_hits),
+    }
     atomic_json(done, summary)
     return summary

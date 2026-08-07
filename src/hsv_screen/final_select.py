@@ -104,8 +104,8 @@ def run(config: dict, force: bool = False) -> dict:
         key=lambda i: records[i]["structure_key"])
     feasible_activity_set = set(activity_indices)
     activity_failures = [i for i in activity_pool_indices if i not in feasible_activity_set]
-    if activity_failures and selection.get("require_all_activity_recorded_3d", False):
-        failure_path = stage / "activity_3d_failures.csv"
+    failure_path = stage / "activity_3d_failures.csv"
+    if activity_failures:
         atomic_csv(failure_path, ({
             "compound_id": records[i].get("compound_id", ""),
             "structure_key": records[i].get("structure_key", ""),
@@ -116,9 +116,11 @@ def run(config: dict, force: bool = False) -> dict:
             "compound_id", "structure_key", "standardized_smiles", "structure3d_status",
             "structure3d_embedding_method",
         ])
-        raise ValueError(
-            f"{len(activity_failures)} activity-recorded parents lack a verified 3D conformation; "
-            f"see {failure_path}. The all-activity docking policy will not silently drop them")
+        if selection["require_all_activity_recorded_3d"]:
+            raise ValueError(
+                f"{len(activity_failures)} activity-recorded parents lack a verified 3D "
+                f"conformation; see {failure_path}. The strict activity-record policy will "
+                "not silently drop them")
     activity_channel = selection["activity_selection_channel"]
     for index in activity_indices:
         if not accept(index, activity_channel, enforce_scaffold_cap=False):
@@ -229,6 +231,7 @@ def run(config: dict, force: bool = False) -> dict:
         "activity_3d_feasible": len(activity_indices), "activity_included": len(activity_indices),
         "activity_in_3d_pool": len(activity_pool_indices),
         "activity_3d_failure_count": len(activity_failures),
+        "activity_3d_failure_report": str(failure_path) if activity_failures else None,
         "unlabeled_requested": unlabeled_target,
         "output": str(output),
         "unique_scaffolds": len(overall_scaffold_counts),

@@ -84,14 +84,17 @@ def run(config: dict) -> dict:
     final = json.loads((root / "05_final_selection/summary.json").read_text(encoding="utf-8"))
     expected_final_size = int(final["activity_3d_feasible"]) + int(config["final_selection"]["unlabeled_count"])
     check("dynamic_final_size", final["selected"] == expected_final_size, final["selected"])
+    require_all_activity_3d = config["final_selection"]["require_all_activity_recorded_3d"]
     check("all_3d_feasible_activity_included",
           final["activity_included"] == final["activity_3d_feasible"]
-          and final["activity_3d_failure_count"] == 0
-          and final["activity_in_3d_pool"] == final["activity_included"]
+          and final["activity_in_3d_pool"]
+          == final["activity_3d_feasible"] + final["activity_3d_failure_count"]
+          and (not require_all_activity_3d or final["activity_3d_failure_count"] == 0)
           and final["source_counts"].get("activity_recorded") == final["activity_3d_feasible"],
           {"in_3d_pool": final["activity_in_3d_pool"],
            "feasible": final["activity_3d_feasible"], "included": final["activity_included"],
-           "failures": final["activity_3d_failure_count"]})
+           "failures": final["activity_3d_failure_count"],
+           "require_all_activity_recorded_3d": require_all_activity_3d})
     check("fixed_unlabeled_quota",
           final["source_counts"].get("unlabeled") == int(config["final_selection"]["unlabeled_count"]),
           final["source_counts"])
@@ -106,15 +109,27 @@ def run(config: dict) -> dict:
           final["maximum_unlabeled_scaffold_multiplicity"] <= int(config["final_selection"]["global_scaffold_cap"]),
           final["maximum_unlabeled_scaffold_multiplicity"])
     ligands = json.loads((root / "06_ligand_states/summary.json").read_text(encoding="utf-8"))
-    check("all_parents_have_states", ligands["all_parents_represented"] and ligands["parent_count"] == final["selected"], ligands)
-    check("exactly_one_state_per_parent",
-          ligands.get("single_state_policy") is True
-          and ligands["state_count"] == ligands["parent_count"]
+    failed_ligand_states = int(ligands["failed_state_proposals"])
+    check("selected_parent_ligand_accounting",
+          ligands["parent_count"] == final["selected"]
           and ligands["state_proposal_count"] == ligands["parent_count"]
-          and ligands["states_per_parent"] == {"1": ligands["parent_count"]},
+          and ligands["state_count"] + failed_ligand_states == ligands["parent_count"]
+          and ligands["excluded_parent_count"] == failed_ligand_states,
+          ligands)
+    check("exactly_one_state_per_dockable_parent",
+          ligands.get("single_state_policy") is True
+          and ligands.get("all_dockable_parents_represented") is True
+          and ligands["dockable_parent_count"] == ligands["state_count"]
+          and ligands["states_per_parent"].get("1", 0) == ligands["state_count"]
+          and ligands["states_per_parent"].get("0", 0) == failed_ligand_states,
           {"parent_count": ligands["parent_count"], "state_count": ligands["state_count"],
            "state_proposal_count": ligands["state_proposal_count"],
            "states_per_parent": ligands["states_per_parent"]})
+    failure_report = ligands.get("ligand_state_failure_report")
+    check("ligand_embedding_failures_are_reported",
+          (failed_ligand_states == 0 and not failure_report)
+          or (failed_ligand_states > 0 and failure_report and Path(failure_report).is_file()),
+          {"failed": failed_ligand_states, "report": failure_report})
     embedded_count = sum(count for status, count in ligands["embed_statuses"].items() if status.startswith("ok"))
     check("only_embedded_states_enter_smina", embedded_count == ligands["state_count"], ligands["embed_statuses"])
     sdf_count = sum(1 for mol in Chem.SDMolSupplier(str(root / "06_ligand_states/ligand_states.sdf"), removeHs=False) if mol is not None)

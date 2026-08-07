@@ -32,7 +32,7 @@ from .chemistry import score_reference_self
 from .config import resolve_path
 from .distributed_runtime import RankContext
 from .execution import run_smina_job, smina_binary
-from .io_utils import atomic_json, iter_csv, prepare_stage_dir
+from .io_utils import atomic_csv, atomic_json, iter_csv, prepare_stage_dir
 from .reference import PNU_SMILES, validate_and_prepare
 
 
@@ -534,11 +534,20 @@ def _merge_ligands(config: dict, stage: Path, plan: dict) -> None:
                           and index not in molecule_blocks]
     failed = [index for index, row in enumerate(rows)
               if row is not None and not row["embed_status"].startswith("ok")]
-    if missing_rows or missing_structures or failed:
+    if missing_rows or missing_structures:
         raise AssertionError(
-            "Distributed ligand generation did not produce exactly one embedded state per "
-            f"parent: missing_rows={len(missing_rows)}, missing_structures={len(missing_structures)}, "
-            f"failed={len(failed)}")
+            "Distributed ligand generation produced incomplete output: "
+            f"missing_rows={len(missing_rows)}, "
+            f"missing_structures={len(missing_structures)}")
+    valid = [index for index, row in enumerate(rows)
+             if row is not None and row["embed_status"].startswith("ok")]
+    failure_path = stage / "ligand_state_failures.csv"
+    if failed:
+        atomic_csv(
+            failure_path,
+            (rows[index] for index in failed if rows[index] is not None),
+            ligands.STATE_FIELDS,
+        )
     csv_path = stage / "ligand_states.csv"
     sdf_path = stage / "ligand_states.sdf"
     csv_partial = Path(str(csv_path) + ".partial")
@@ -547,7 +556,8 @@ def _merge_ligands(config: dict, stage: Path, plan: dict) -> None:
             sdf_partial.open("w", encoding="utf-8") as sdf_handle:
         writer = csv.DictWriter(csv_handle, fieldnames=ligands.STATE_FIELDS)
         writer.writeheader()
-        for index, row in enumerate(rows):
+        for index in valid:
+            row = rows[index]
             assert row is not None
             writer.writerow(row)
             sdf_handle.write(molecule_blocks[index])
@@ -556,19 +566,28 @@ def _merge_ligands(config: dict, stage: Path, plan: dict) -> None:
             sdf_handle.write("$$$$\n")
     os.replace(csv_partial, csv_path)
     os.replace(sdf_partial, sdf_path)
-    if proposal_count != parent_count or state_count != parent_count:
+    if proposal_count != parent_count or state_count != len(valid):
         raise AssertionError(
             f"Expected {parent_count} single-state proposals, got proposals={proposal_count}, "
             f"embedded={state_count}")
+    states_per_parent = {"1": state_count}
+    if failed:
+        states_per_parent["0"] = len(failed)
     summary = {
         "stage": "ligand_states", "parent_count": parent_count,
+        "dockable_parent_count": state_count,
+        "excluded_parent_count": len(failed),
         "state_count": state_count, "state_proposal_count": proposal_count,
-        "failed_state_proposals": proposal_count - state_count,
-        "protonation": plan["protonation"], "states_per_parent": {"1": parent_count},
-        "embed_statuses": dict(statuses), "all_parents_represented": True,
+        "failed_state_proposals": len(failed),
+        "ligand_state_failure_report": str(failure_path) if failed else None,
+        "embedding_failure_policy": config["ligand_states"]["embedding_failure_policy"],
+        "protonation": plan["protonation"], "states_per_parent": states_per_parent,
+        "embed_statuses": dict(statuses),
+        "all_parents_represented": not failed,
+        "all_dockable_parents_represented": True,
         "single_state_policy": True,
         "distributed": _distributed_metadata(config),
-        "interpretation": "Exactly one state per parent: Open Babel pH adjustment, deterministic RDKit canonical tautomer selection, source stereochemistry preservation, and one ETKDGv3 starting conformer. This is a reproducible screening state, not a microscopic pKa population model.",
+        "interpretation": "At most one state per selected parent: Open Babel pH adjustment, deterministic RDKit canonical tautomer selection, source stereochemistry preservation, and one ETKDGv3 starting conformer. Parents that fail verified 3D embedding are excluded with a traceable failure report. This is a reproducible screening state, not a microscopic pKa population model.",
         "elapsed_seconds": time.time() - float(plan["started"]),
     }
     shutil.rmtree(stage / "_distributed")
@@ -606,17 +625,25 @@ def run_smina_jobs(config: dict, context: RankContext) -> None:
     context.log(
         f"Smina assigned {len(local_jobs)}/{len(jobs)} chunks; "
         f"{parallel} concurrent one-CPU jobs")
-    completed = 0
+    processed = 0
+    outcomes: Counter[str] = Counter()
     with ThreadPoolExecutor(max_workers=min(parallel, max(1, len(local_jobs)))) as executor:
         futures = [executor.submit(run_smina_job, binary, row) for row in local_jobs]
         for future in as_completed(futures):
-            future.result()
-            completed += 1
-            if completed == len(local_jobs) or completed % 10 == 0:
-                context.log(f"Smina completed {completed}/{len(local_jobs)} local chunks")
+            result = future.result()
+            outcomes[result["status"]] += 1
+            processed += 1
+            if processed == len(local_jobs) or processed % 10 == 0:
+                context.log(
+                    f"Smina processed {processed}/{len(local_jobs)} local chunks "
+                    f"(new={outcomes['completed']}, skipped={outcomes['skipped']}, "
+                    f"recovered={outcomes['recovered']})")
     atomic_json(context.sync_dir / f"smina_rank_{context.rank:02d}.json", {
         "rank": context.rank, "hostname": context.hostname,
-        "assigned_jobs": len(local_jobs), "completed_jobs": completed,
+        "assigned_jobs": len(local_jobs), "processed_jobs": processed,
+        "completed_jobs": outcomes["completed"],
+        "skipped_jobs": outcomes["skipped"],
+        "recovered_jobs": outcomes["recovered"],
     })
     context.barrier("smina_jobs_complete")
 

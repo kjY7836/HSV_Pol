@@ -28,11 +28,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="H9E937 8V1Q-WT staged screening pipeline")
     parser.add_argument("command", choices=[
         "all", "complete", "smina", *STAGES, "qc", "path", "collect-docking",
-        "postdock3d", "prepare-affinity", "integrated-score"
+        "postdock3d", "prepare-affinity", "integrated-score", "final-score"
     ])
     parser.add_argument("--config", type=Path, default=Path("config/full.json"))
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--profile", default="wt", help="Integrated-scoring profile (WT-only workflow: wt)")
+    parser.add_argument("--top-n", type=int, default=200, help="Number of top compounds to export")
     args = parser.parse_args()
     config, _ = load_config(args.config)
     if args.force and args.command == "all":
@@ -55,7 +56,9 @@ def main() -> None:
     elif args.command == "prepare-affinity":
         result = affinity_input.run(config, args.force)
     elif args.command == "integrated-score":
-        result = scoring.run(config, args.force, args.profile)
+        result = scoring.run(config, args.force, args.profile, args.top_n)
+    elif args.command == "final-score":
+        result = scoring.run(config, args.force, args.profile, args.top_n)
     elif args.command == "all":
         result = None
         for name, function in STAGES.items():

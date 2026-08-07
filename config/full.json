@@ -91,7 +91,7 @@
   },
   "final_selection": {
     "activity_recorded_policy": "all_3d_feasible",
-    "require_all_activity_recorded_3d": true,
+    "require_all_activity_recorded_3d": false,
     "activity_selection_channel": "activity_recorded_all",
     "unlabeled_count": 10000,
     "unlabeled_channel_counts": {"pnu_structure3d_enrichment": 1000, "pnu_2d_enrichment": 1000, "pnu_pharm2d_enrichment": 1000, "h9e937_pocket_discovery": 1500, "diversity": 4000, "exploration": 1500},
@@ -106,6 +106,7 @@
     "protonation_method": "openbabel",
     "ph": 7.4,
     "tautomer_method": "rdkit_canonical",
+    "embedding_failure_policy": "exclude_with_report",
     "states_per_parent": 1,
     "conformers_per_state": 1,
     "embed_3d": true

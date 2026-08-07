@@ -17,8 +17,20 @@ venv/
 
 # Runtime outputs and partial files
 runs/
+*.zip
+*.tar
+*.tgz
+*.gz
+*.bz2
+*.xz
+*.7z
+*.rar
 *.partial
 *.log
+
+# Generated affinity artifacts and large local model weights
+affinity/examples/results/
+affinity/weights/
 
 # Kept locally but intentionally outside the minimal Git payload
 docs/

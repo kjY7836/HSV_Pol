@@ -7,6 +7,7 @@ import unittest
 from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from rdkit import Chem
@@ -15,17 +16,18 @@ from rdkit.Chem import AllChem
 from hsv_screen.affinity_input import run as run_affinity_input
 from hsv_screen.chemistry import classify_and_standardize, hard_filter_reasons, score_reference_self
 from hsv_screen.config import load_config
-from hsv_screen.docking import collect
+from hsv_screen.docking import _sanitize_smina_pose, collect
 from hsv_screen.distributed_runtime import (
-    RankContext, build_mpi_command, distributed_identity, validate_layout,
+    MPI_EXPORT_ENV, RankContext, build_mpi_command, distributed_identity, validate_layout,
 )
-from hsv_screen.distributed_pipeline import run_score2d, run_standardize
+from hsv_screen.distributed_pipeline import _merge_ligands, run_score2d, run_standardize
+from hsv_screen.execution import run_smina_job
 from hsv_screen.io_utils import iter_csv
-from hsv_screen.ligands import _generate_task
+from hsv_screen.ligands import STATE_FIELDS, _generate_task
 from hsv_screen.postdock3d import run as run_postdock3d
 from hsv_screen.prescreen_pool import fraction_quotas, select_source
 from hsv_screen.reference import PNU_SMILES, validate_and_prepare
-from hsv_screen.scoring import aggregate_scores, scaled_affinity
+from hsv_screen.scoring import aggregate_scores, scaled_affinity, top_hit_rows
 from hsv_screen.screen3d import (
     build_feature_model, init_worker, parse_pocket_atoms, score_conformation_similarity,
     score_conformer, score_task,
@@ -105,6 +107,9 @@ class DistributedRuntimeTests(unittest.TestCase):
         self.assertEqual(command[:3], ["/opt/mpi/bin/mpirun", "-np", "2"])
         self.assertIn("ppr:1:node:PE=64", command)
         self.assertIn("core", command)
+        for name in MPI_EXPORT_ENV:
+            position = command.index(name)
+            self.assertEqual(command[position - 1], "-x")
         self.assertEqual(command[-2], "--config")
 
     def test_two_unique_hosts_each_expose_64_cpus(self):
@@ -204,6 +209,109 @@ class DistributedRuntimeTests(unittest.TestCase):
             })
 
 
+class SminaExecutionTests(unittest.TestCase):
+    def write_ligand(self, path: Path, affinity: str | None = None) -> None:
+        mol = Chem.MolFromSmiles("CCO")
+        mol.SetProp("_Name", "state_001")
+        mol.SetProp("state_id", "state_001")
+        if affinity is not None:
+            mol.SetProp("minimizedAffinity", affinity)
+        writer = Chem.SDWriter(str(path))
+        writer.write(mol)
+        writer.close()
+
+    def job(self, root: Path) -> tuple[Path, dict[str, str]]:
+        binary = root / "smina"
+        binary.write_text("test binary", encoding="utf-8")
+        receptor = root / "receptor.pdbqt"
+        receptor.write_text("RECEPTOR\n", encoding="utf-8")
+        ligands = root / "ligands.sdf"
+        self.write_ligand(ligands)
+        row = {
+            "protocol_id": "8v1q_open_wt", "chunk": "1",
+            "receptor": str(receptor), "ligands": str(ligands),
+            "output": str(root / "docked.sdf"), "log": str(root / "smina.log"),
+            "center_x": "1", "center_y": "2", "center_z": "3",
+            "size_x": "10", "size_y": "10", "size_z": "10",
+            "cpu": "1", "exhaustiveness": "8", "num_modes": "9", "seed": "7",
+        }
+        return binary, row
+
+    def test_existing_complete_output_is_recovered_then_skipped(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary, row = self.job(root)
+            output = Path(row["output"])
+            self.write_ligand(output, affinity="-7.25")
+            original = output.read_bytes()
+
+            with patch("hsv_screen.execution.subprocess.run") as mocked_run:
+                first = run_smina_job(binary, row)
+                second = run_smina_job(binary, row)
+
+            self.assertEqual(first["status"], "recovered")
+            self.assertEqual(second["status"], "skipped")
+            mocked_run.assert_not_called()
+            self.assertEqual(output.read_bytes(), original)
+            self.assertTrue(Path(str(output) + ".done.json").is_file())
+
+    def test_failed_rerun_preserves_previous_output(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary, row = self.job(root)
+            output = Path(row["output"])
+            self.write_ligand(output, affinity="-7.25")
+            run_smina_job(binary, row)
+            original = output.read_bytes()
+            changed_job = {**row, "seed": "99"}
+
+            with patch(
+                "hsv_screen.execution.subprocess.run",
+                return_value=SimpleNamespace(returncode=1, stderr="test failure"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "without replacing"):
+                    run_smina_job(binary, changed_job)
+
+            self.assertEqual(output.read_bytes(), original)
+
+    def test_new_output_is_validated_before_atomic_install(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary, row = self.job(root)
+
+            def fake_smina(command: list[str], **_: object) -> SimpleNamespace:
+                temporary_output = Path(command[command.index("--out") + 1])
+                temporary_log = Path(command[command.index("--log") + 1])
+                self.write_ligand(temporary_output, affinity="-8.0")
+                temporary_log.write_text("completed\n", encoding="utf-8")
+                return SimpleNamespace(returncode=0, stderr="")
+
+            with patch("hsv_screen.execution.subprocess.run", side_effect=fake_smina):
+                result = run_smina_job(binary, row)
+
+            self.assertEqual(result["status"], "completed")
+            self.assertTrue(Path(row["output"]).is_file())
+            self.assertTrue(Path(row["log"]).is_file())
+            self.assertTrue(Path(row["output"] + ".done.json").is_file())
+
+    def test_charged_sulfoxide_double_bond_is_narrowly_repaired(self):
+        mol = Chem.MolFromSmiles("C[S+]([O-])c1ccccc1")
+        sulfur = next(atom for atom in mol.GetAtoms() if atom.GetSymbol() == "S")
+        oxygen = next(
+            atom for atom in mol.GetAtoms()
+            if atom.GetSymbol() == "O" and atom.GetFormalCharge() == -1)
+        mol.GetBondBetweenAtoms(sulfur.GetIdx(), oxygen.GetIdx()).SetBondType(
+            Chem.BondType.DOUBLE)
+        mol.UpdatePropertyCache(strict=False)
+
+        repaired, repairs = _sanitize_smina_pose(mol)
+
+        self.assertEqual(repairs, ["charged_sulfoxide_double_to_single"])
+        bond = repaired.GetBondBetweenAtoms(sulfur.GetIdx(), oxygen.GetIdx())
+        self.assertEqual(bond.GetBondType(), Chem.BondType.SINGLE)
+        Chem.SanitizeMol(repaired)
+
+
 class ReferenceAndQuotaTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -250,7 +358,7 @@ class ReferenceAndQuotaTests(unittest.TestCase):
     def test_dynamic_all_activity_policy(self):
         final = self.config["final_selection"]
         self.assertEqual(final["activity_recorded_policy"], "all_3d_feasible")
-        self.assertTrue(final["require_all_activity_recorded_3d"])
+        self.assertFalse(final["require_all_activity_recorded_3d"])
         self.assertEqual(final["unlabeled_count"], 167)
         protocol = self.config["docking"]["protocols"][0]
         self.assertEqual(protocol["scope"]["max_parents"], 0)
@@ -274,6 +382,55 @@ class ReferenceAndQuotaTests(unittest.TestCase):
         self.assertEqual(metadata["formal_charge"], 1)
         self.assertIn("openbabel_pH_7.4", metadata["state_origin"])
         self.assertIsNotNone(Chem.MolFromMolBlock(mol_block, removeHs=False))
+
+    def test_failed_ligand_embedding_is_reported_and_excluded(self):
+        with tempfile.TemporaryDirectory() as temp:
+            stage = Path(temp)
+            distributed = stage / "_distributed"
+            distributed.mkdir()
+            base = {
+                "compound_id": "compound", "source_pool": "unlabeled",
+                "selection_channel": "diversity", "state_rank": "1",
+                "state_smiles": "CC", "state_origin": "test", "formal_charge": "0",
+                "embedding_method": "ETKDGv3",
+            }
+            rows = [
+                {"_global_index": 0, "parent_structure_key": "a" * 40,
+                 "state_id": "a" * 16 + "_s01", "embed_status": "ok", **base},
+                {"_global_index": 1, "parent_structure_key": "b" * 40,
+                 "state_id": "b" * 16 + "_s01", "embed_status": "embed_failed", **base},
+            ]
+            with (distributed / "states_rank_00.csv").open(
+                    "w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=["_global_index", *STATE_FIELDS])
+                writer.writeheader()
+                writer.writerows(rows)
+            mol = Chem.AddHs(Chem.MolFromSmiles("CC"))
+            self.assertEqual(AllChem.EmbedMolecule(mol, randomSeed=1), 0)
+            mol.SetIntProp("_distributed_global_index", 0)
+            sdf_writer = Chem.SDWriter(str(distributed / "states_rank_00.sdf"))
+            sdf_writer.write(mol)
+            sdf_writer.close()
+            (distributed / "ligand_summary_rank_00.json").write_text(json.dumps({
+                "rank": 0, "parent_count": 2, "proposals": 2, "valid": 1,
+                "statuses": {"ok": 1, "embed_failed": 1},
+            }), encoding="utf-8")
+
+            _merge_ligands(self.config, stage, {
+                "parent_count": 2, "protonation": {"method": "test"}, "started": 0,
+            })
+
+            summary = json.loads((stage / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["parent_count"], 2)
+            self.assertEqual(summary["state_count"], 1)
+            self.assertEqual(summary["excluded_parent_count"], 1)
+            self.assertEqual(summary["states_per_parent"], {"1": 1, "0": 1})
+            with (stage / "ligand_states.csv").open(encoding="utf-8") as handle:
+                self.assertEqual(len(list(csv.DictReader(handle))), 1)
+            with (stage / "ligand_state_failures.csv").open(encoding="utf-8") as handle:
+                failures = list(csv.DictReader(handle))
+            self.assertEqual(len(failures), 1)
+            self.assertEqual(failures[0]["parent_structure_key"], "b" * 40)
 
     def test_200k_quota_math(self):
         fractions = {"pnu_2d": 0.20, "pharm2d": 0.15, "scaffold_diversity": 0.45, "exploration": 0.20}
@@ -321,9 +478,9 @@ class IntegratedScoringTests(unittest.TestCase):
     def test_external_affinity_drives_parent_ranking(self):
         parents = [
             {"structure_key": "p1", "compound_id": "one", "source_pool": "unlabeled",
-             "selection_channel": "diversity", "qed": "0.7"},
+             "selection_channel": "diversity", "standardized_smiles": "CCO", "qed": "0.7"},
             {"structure_key": "p2", "compound_id": "two", "source_pool": "unlabeled",
-             "selection_channel": "diversity", "qed": "0.7"},
+             "selection_channel": "diversity", "standardized_smiles": "CCN", "qed": "0.7"},
         ]
         docking = [
             {"pose_id": "a", "parent_structure_key": "p1", "state_id": "p1s", "protocol_id": "wt",
@@ -340,6 +497,11 @@ class IntegratedScoringTests(unittest.TestCase):
         self.assertEqual([row["parent_structure_key"] for row in ranked], ["p1", "p2"])
         self.assertEqual(diagnostics["affinity_pose_coverage"], 1.0)
         self.assertEqual(diagnostics["affinity_parent_coverage"], 1.0)
+        hits = top_hit_rows(ranked, 1)
+        self.assertEqual(hits, [{
+            "hit_id": "one", "SMILES": "CCO", "Rank": 1,
+            "score": f"{ranked[0]['integrated_score']:.8f}",
+        }])
 
     def test_affinity_unknown_pose_is_rejected(self):
         parents = [{"structure_key": "p1", "qed": "0.7"}]

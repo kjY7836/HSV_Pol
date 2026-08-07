@@ -68,8 +68,9 @@ def validate_config(config: dict) -> None:
     final = config["final_selection"]
     if final.get("activity_recorded_policy") != "all_3d_feasible":
         raise ValueError("final_selection.activity_recorded_policy must be all_3d_feasible")
-    if not final.get("require_all_activity_recorded_3d", False):
-        raise ValueError("final_selection.require_all_activity_recorded_3d must be true")
+    if not isinstance(final.get("require_all_activity_recorded_3d"), bool):
+        raise ValueError(
+            "final_selection.require_all_activity_recorded_3d must be a boolean")
     unlabeled_count = int(final["unlabeled_count"])
     if unlabeled_count <= 0:
         raise ValueError("final_selection.unlabeled_count must be positive")
@@ -84,6 +85,9 @@ def validate_config(config: dict) -> None:
         raise ValueError("ligand_states.conformers_per_state must be exactly 1")
     if ligand_states.get("tautomer_method") != "rdkit_canonical":
         raise ValueError("ligand_states.tautomer_method must be rdkit_canonical")
+    if ligand_states.get("embedding_failure_policy") != "exclude_with_report":
+        raise ValueError(
+            "ligand_states.embedding_failure_policy must be exclude_with_report")
     scoring = config["integrated_scoring"]
     if set(scoring["profiles"]) != {"wt"}:
         raise ValueError("This workflow supports only the wt integrated-scoring profile")

@@ -9,7 +9,7 @@ import zlib
 from collections import Counter
 from pathlib import Path
 
-from rdkit import Chem
+from rdkit import Chem, rdBase
 
 from .config import resolve_path
 from .io_utils import atomic_csv, atomic_json, prepare_stage_dir
@@ -164,6 +164,77 @@ def _affinity_property(mol: Chem.Mol) -> float:
     raise ValueError(f"Docked pose lacks a recognized Smina affinity property; found {names}")
 
 
+def _sanitize_smina_pose(raw_mol: Chem.Mol) -> tuple[Chem.Mol, list[str]]:
+    """Sanitize a pose, repairing only confirmed Smina bond-perception errors.
+
+    Some Smina/Open Babel builds write the valid zwitterionic sulfoxide S+-[O-]
+    as S+=[O-].  Coordinates, atom identities, charges, and scores remain valid;
+    only that bond order is inconsistent.  They can likewise write the single bond
+    between two neutral, three-coordinate boron atoms as a double bond.  No other
+    sanitization error is relaxed.
+    """
+    checked = Chem.Mol(raw_mol)
+    try:
+        with rdBase.BlockLogs():
+            Chem.SanitizeMol(checked)
+    except Exception as original_error:
+        repaired = Chem.Mol(raw_mol)
+        repairs: list[str] = []
+        for bond in repaired.GetBonds():
+            if bond.GetBondType() != Chem.BondType.DOUBLE:
+                continue
+            first = bond.GetBeginAtom()
+            second = bond.GetEndAtom()
+            sulfur, oxygen = (
+                (first, second) if first.GetSymbol() == "S" else (second, first))
+            if not (
+                sulfur.GetSymbol() == "S"
+                and sulfur.GetFormalCharge() == 1
+                and sulfur.GetDegree() == 3
+                and oxygen.GetSymbol() == "O"
+                and oxygen.GetFormalCharge() == -1
+                and oxygen.GetDegree() == 1
+            ):
+                continue
+            bond.SetBondType(Chem.BondType.SINGLE)
+            bond.SetIsAromatic(False)
+            repairs.append("charged_sulfoxide_double_to_single")
+        for bond in repaired.GetBonds():
+            if bond.GetBondType() != Chem.BondType.DOUBLE:
+                continue
+            first = bond.GetBeginAtom()
+            second = bond.GetEndAtom()
+            if not (
+                first.GetAtomicNum() == 5
+                and second.GetAtomicNum() == 5
+                and first.GetFormalCharge() == 0
+                and second.GetFormalCharge() == 0
+                and first.GetDegree() == 3
+                and second.GetDegree() == 3
+            ):
+                continue
+            bond.SetBondType(Chem.BondType.SINGLE)
+            bond.SetIsAromatic(False)
+            repairs.append("neutral_diboron_double_to_single")
+        if not repairs:
+            raise ValueError(str(original_error)) from original_error
+        repaired.UpdatePropertyCache(strict=False)
+        try:
+            with rdBase.BlockLogs():
+                Chem.SanitizeMol(repaired)
+        except Exception as repaired_error:
+            raise ValueError(
+                f"Smina topology repair did not yield a valid molecule: {repaired_error}"
+            ) from repaired_error
+        checked = repaired
+    else:
+        repairs = []
+
+    for conformer in checked.GetConformers():
+        conformer.Set3D(True)
+    return checked, repairs
+
+
 def collect(config: dict, force: bool = False) -> dict:
     root = resolve_path(config, config["output_dir"])
     stage = root / "08_docking_results"
@@ -231,6 +302,8 @@ def collect(config: dict, force: bool = False) -> dict:
                 f"first={sorted(missing_from_schedule)[0]}")
     rows: list[dict] = []
     counts: Counter[str] = Counter()
+    topology_repairs: Counter[str] = Counter()
+    topology_repair_states: set[str] = set()
     observed_states: dict[str, set[str]] = {protocol_id: set() for protocol_id in protocols}
     pose_counts: dict[str, Counter[str]] = {
         protocol_id: Counter() for protocol_id in protocols}
@@ -244,50 +317,65 @@ def collect(config: dict, force: bool = False) -> dict:
             # files must never leak into a new affinity input set.
             files = sorted(jobs_by_protocol[protocol_id])
             for path in files:
-                for source_record_index, mol in enumerate(
-                        Chem.SDMolSupplier(str(path), removeHs=False), start=1):
-                    if mol is None:
-                        raise ValueError(f"Invalid docked pose in {path}")
-                    state_id = (mol.GetProp("state_id") if mol.HasProp("state_id")
-                                else (mol.GetProp("_Name") if mol.HasProp("_Name") else ""))
-                    metadata = state_metadata.get(state_id)
-                    parent = (mol.GetProp("parent_structure_key") if mol.HasProp("parent_structure_key")
-                              else (metadata or {}).get("parent_structure_key", ""))
-                    if not state_id or not parent:
-                        raise ValueError(f"Docked pose in {path} lacks state/parent traceability")
-                    if state_id not in expected_states[protocol_id]:
-                        raise ValueError(
-                            f"Smina output contains unscheduled state {state_id} for {protocol_id}")
-                    observed_states[protocol_id].add(state_id)
-                    pose_counts[protocol_id][state_id] += 1
-                    pose_rank = pose_counts[protocol_id][state_id]
-                    pose_id = f"{protocol_id}|{state_id}|{pose_rank}"
-                    ligand_record_index += 1
-                    receptor_pdb = str(resolve_path(config, protocol["receptor_pdb"]))
-                    for name, value in {
-                        "pose_id": pose_id, "parent_structure_key": parent,
-                        "state_id": state_id, "protocol_id": protocol_id,
-                        "receptor_id": protocol["receptor_id"], "box_id": protocol["box_id"],
-                        "mutant_id": protocol.get("mutant_id", "WT"),
-                        "receptor_pdb": receptor_pdb,
-                        "compound_id": (metadata or {}).get("compound_id", ""),
-                        "source_pool": (metadata or {}).get("source_pool", ""),
-                        "selection_channel": (metadata or {}).get("selection_channel", ""),
-                        "state_smiles": (metadata or {}).get("state_smiles", ""),
-                    }.items():
-                        mol.SetProp(name, str(value))
-                    mol.SetProp("_Name", pose_id)
-                    pose_writer.write(mol)
-                    rows.append({
-                        "pose_id": pose_id, "parent_structure_key": parent, "state_id": state_id,
-                        "protocol_id": protocol_id, "receptor_id": protocol["receptor_id"],
-                        "box_id": protocol["box_id"], "mutant_id": protocol.get("mutant_id", "WT"),
-                        "pose_rank": pose_rank, "smina_score": _affinity_property(mol),
-                        "receptor_pdb": receptor_pdb, "ligand_pose_sdf": str(consolidated),
-                        "ligand_record_index": ligand_record_index,
-                        "source_docked_sdf": str(path), "source_record_index": source_record_index,
-                    })
-                    counts[protocol_id] += 1
+                supplier = Chem.SDMolSupplier(
+                    str(path), sanitize=False, removeHs=False, strictParsing=True)
+                with rdBase.BlockLogs():
+                    source_records = enumerate(supplier, start=1)
+                    for source_record_index, raw_mol in source_records:
+                        if raw_mol is None:
+                            raise ValueError(
+                                f"Invalid raw docked pose record {source_record_index} in {path}")
+                        try:
+                            mol, repairs = _sanitize_smina_pose(raw_mol)
+                        except ValueError as exc:
+                            raise ValueError(
+                                f"Invalid docked pose record {source_record_index} in {path}: {exc}"
+                            ) from exc
+                        state_id = (mol.GetProp("state_id") if mol.HasProp("state_id")
+                                    else (mol.GetProp("_Name") if mol.HasProp("_Name") else ""))
+                        for repair in repairs:
+                            topology_repairs[repair] += 1
+                            topology_repair_states.add(state_id)
+                        if repairs:
+                            mol.SetProp("smina_topology_repairs", json.dumps(repairs))
+                        metadata = state_metadata.get(state_id)
+                        parent = (mol.GetProp("parent_structure_key") if mol.HasProp("parent_structure_key")
+                                  else (metadata or {}).get("parent_structure_key", ""))
+                        if not state_id or not parent:
+                            raise ValueError(f"Docked pose in {path} lacks state/parent traceability")
+                        if state_id not in expected_states[protocol_id]:
+                            raise ValueError(
+                                f"Smina output contains unscheduled state {state_id} for {protocol_id}")
+                        observed_states[protocol_id].add(state_id)
+                        pose_counts[protocol_id][state_id] += 1
+                        pose_rank = pose_counts[protocol_id][state_id]
+                        pose_id = f"{protocol_id}|{state_id}|{pose_rank}"
+                        ligand_record_index += 1
+                        receptor_pdb = str(resolve_path(config, protocol["receptor_pdb"]))
+                        for name, value in {
+                            "pose_id": pose_id, "parent_structure_key": parent,
+                            "state_id": state_id, "protocol_id": protocol_id,
+                            "receptor_id": protocol["receptor_id"], "box_id": protocol["box_id"],
+                            "mutant_id": protocol.get("mutant_id", "WT"),
+                            "receptor_pdb": receptor_pdb,
+                            "compound_id": (metadata or {}).get("compound_id", ""),
+                            "source_pool": (metadata or {}).get("source_pool", ""),
+                            "selection_channel": (metadata or {}).get("selection_channel", ""),
+                            "state_smiles": (metadata or {}).get("state_smiles", ""),
+                        }.items():
+                            mol.SetProp(name, str(value))
+                        mol.SetProp("_Name", pose_id)
+                        pose_writer.write(mol)
+                        rows.append({
+                            "pose_id": pose_id, "parent_structure_key": parent, "state_id": state_id,
+                            "protocol_id": protocol_id, "receptor_id": protocol["receptor_id"],
+                            "box_id": protocol["box_id"], "mutant_id": protocol.get("mutant_id", "WT"),
+                            "pose_rank": pose_rank, "smina_score": _affinity_property(mol),
+                            "receptor_pdb": receptor_pdb, "ligand_pose_sdf": str(consolidated),
+                            "ligand_record_index": ligand_record_index,
+                            "source_docked_sdf": str(path), "source_record_index": source_record_index,
+                        })
+                        counts[protocol_id] += 1
     finally:
         pose_writer.close()
     missing_states = {
@@ -315,6 +403,9 @@ def collect(config: dict, force: bool = False) -> dict:
         "observed_state_counts": {
             protocol_id: len(states) for protocol_id, states in observed_states.items()},
         "all_scheduled_states_have_poses": True,
+        "smina_topology_repair_count": sum(topology_repairs.values()),
+        "smina_topology_repair_state_count": len(topology_repair_states),
+        "smina_topology_repair_types": dict(topology_repairs),
         "docking_poses": str(output),
         "consolidated_pose_sdf": str(consolidated),
         "affinity_handoff": "Run prepare-affinity after postdock3d to create the standalone receptor/ligand structure package and blank prediction table.",

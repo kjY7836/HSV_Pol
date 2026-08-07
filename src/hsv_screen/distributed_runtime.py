@@ -30,6 +30,18 @@ LOCAL_RANK_KEYS = (
 )
 RUN_ID_ENV = "HSV_SCREEN_DISTRIBUTED_RUN_ID"
 CHILD_ENV = "HSV_SCREEN_DISTRIBUTED_CHILD"
+MPI_EXPORT_ENV = (
+    RUN_ID_ENV,
+    CHILD_ENV,
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "BABEL_LIBDIR",
+    "BABEL_DATADIR",
+    "CONDA_PREFIX",
+    "PATH",
+)
 
 
 def _first_int(environment: Mapping[str, str], keys: tuple[str, ...], default: int) -> int:
@@ -99,8 +111,13 @@ def build_mpi_command(config: dict, config_path: Path, mode: str) -> list[str]:
             "--map-by", f"ppr:1:node:PE={REQUIRED_WORKERS_PER_NODE}",
             "--bind-to", "core",
         ])]
+    export_args = [
+        item
+        for name in MPI_EXPORT_ENV
+        for item in ("-x", name)
+    ]
     return [
-        launcher, "-np", str(layout["nodes"]), *arguments,
+        launcher, "-np", str(layout["nodes"]), *arguments, *export_args,
         sys.executable, "-m", "src.hsv_screen.cli", mode,
         "--config", str(config_path.resolve()),
     ]

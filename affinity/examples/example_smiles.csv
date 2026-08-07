@@ -1,0 +1,6 @@
+ligand_id,name,smiles
+TITAN106977264,"8-[3-(3-methylphenyl)-1,2,4-oxadiazol-5-yl]-2H,3H-[1,2,4]triazolo[4,3-a]pyridin-3-one",CC1=CC=CC(=C1)C1=NOC(=N1)C1=CC=CN2C(=O)NN=C12
+TITAN105933204,"3-(2,4-dimethoxyphenyl)-1-(4-methoxy-2-methylphenyl)urea",COC1=CC=C(NC(=O)NC2=C(OC)C=C(OC)C=C2)C(C)=C1
+TITAN107171536,"trans-6-(6,7-dihydrothieno[3,2-c]pyridin-5(4H)-ylcarbonyl)-4-methyl-5-(2-methylphenyl)morpholin-3-one",CN1[C@@H]([C@H](OCC1=O)C(=O)N1CCC2=C(C1)C=CS2)C1=C(C)C=CC=C1
+TITAN101559971,"3-(1H-imidazol-4-yl)-N-methyl-N-[(2-methylpyridin-4-yl)methyl]-2-(1H-pyrrol-1-yl)propanamide",CN(CC1=CC(C)=NC=C1)C(=O)C(CC1=CNC=N1)N1C=CC=C1
+TITAN101123320,"N-[3-(3,5-dimethyl-1H-pyrazol-1-yl)propyl]-3-(1H-imidazol-2-yl)benzamide",CC1=CC(C)=NN1CCCNC(=O)C1=CC=CC(=C1)C1=NC=CN1

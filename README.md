@@ -2,7 +2,8 @@
 
 面向 HSV-1 DNA 聚合酶催化亚基 UL30（UniProt `H9E937`）的可追溯虚拟筛选工程。流程从约
 1,000 万条原始化合物记录中形成 20 万个三维预筛母体，随后将固定 10,000 个未标注来源
-候选与全部计算可用的活性记录来源送入 `8V1Q` WT 受体 Docking。活性记录不被解释为
+候选与全部计算可用的活性记录来源送入 `8V1Q` WT 受体 Docking；无法生成经验证 3D 构象的
+活性记录会被排除并写入 `activity_3d_failures.csv`。活性记录不被解释为
 HSV Pol 阳性，未标注记录也不被解释为阴性。
 
 ## 当前方案
@@ -14,7 +15,8 @@ HSV Pol 阳性，未标注记录也不被解释为阴性。
 → 固定 200,000 个 3D 预筛母体
 → PNU 通道 3D 富集及其他通道 3D 可生成性检查
 → 全部计算可用活性记录 + 10,000 个未标注候选
-→ 每个母体唯一 pH 7.4/规范互变异构状态和一个 ETKDGv3 初始构象
+→ 每个母体最多一个 pH 7.4/规范互变异构状态和一个 ETKDGv3 初始构象
+→ 排除无法生成经验证 3D 初始构象的母体并输出失败清单
 → 仅 8V1Q-WT 局部 Smina Docking，每个输入状态最多输出 9 个 pose
 → Docking 后 PNU 三维构象相似性
 → 独立 affinity 输入包（受体 PDB、pose SDF、全部非 affinity 分数）
@@ -22,9 +24,11 @@ HSV Pol 阳性，未标注记录也不被解释为阴性。
 → WT 综合评分
 ```
 
-每个母体只进入一个化学状态和一个初始构象。优先采用 Open Babel 在 pH 7.4 生成的结构，
+每个成功嵌入的母体只进入一个化学状态和一个初始构象。优先采用 Open Babel 在 pH 7.4 生成的结构，
 再用 RDKit 选择确定性的规范互变异构体；保留来源已定义的立体化学，不枚举未定义立体中心。
-这是一种可复现的筛选状态，不代表完整微观 pKa/微观状态分布。
+无法生成经验证 3D 初始构象的母体不进入 Docking，并记录在
+`06_ligand_states/ligand_state_failures.csv`。这是一种可复现的筛选状态，不代表完整微观
+pKa/微观状态分布。
 
 ## 结构与 Docking
 
@@ -119,13 +123,26 @@ bash scripts/run_full.sh
 # 已经准备好 jobs.tsv 时，只运行全量 Smina 和后处理
 bash scripts/run_smina.sh
 
-# 外部模型填写 predicted_paffinity 后执行最终评分
-bash scripts/run_score.sh
+# 使用仓库内置的本地 3DMPG 模型预测并原子回填 predicted_paffinity
+AFFINITY_DEVICE=cuda:0 AFFINITY_BATCH_SIZE=4 bash scripts/run_local_affinity.sh
+
+# affinity 预测完成后执行最终评分
+bash scripts/run_final_score.sh
 ```
 
 当前固定使用2个CPU节点、每节点64个物理核，总计128核。`run_full.sh`和`run_smina.sh`仍只有一条
 Python命令；Python入口会调用系统`mpirun -np 2 --map-by ppr:1:node:PE=64 --bind-to core`，在每个节点启动一个
 协调rank，再由每个rank创建64个本地工作进程。Smina每节点并发64个任务，每个任务`cpu=1`。
+
+Smina 支持逐 chunk 断点续跑。每个成功输出旁会写入`docked_*.sdf.done.json`，其中包含任务输入、
+受体、Smina程序和参数的指纹。重提交时会以`sanitize=False`读取旧SDF，校验所有输入state均有
+可追踪pose且打分字段有效；通过校验的旧输出直接跳过，升级前生成的无marker输出会自动补建marker。
+需要重算的chunk先写唯一临时SDF并完成相同校验，成功后才原子替换正式结果，所以作业失败或被中断
+不会覆盖已有输出。若确实需要强制重算单个chunk，应先把对应正式SDF及其`.done.json`移出输出目录。
+
+Docking收集阶段会严格sanitize每个pose。针对已确认的Smina/Open Babel亚砜写出问题，收集器仅将
+非法的`S+=[O-]`规范化回输入所用的`S+-[O-]`单键表示，并在汇总SDF属性及
+`08_docking_results/summary.json`中记录修复类型、pose数和state数；其他化学错误仍会立即失败。
 
 应通过调度器申请资源，不能在登录节点直接运行全量流程。提交文件示例：
 
@@ -165,17 +182,22 @@ runs/<run>/10_affinity_input/
 
 `docked_poses.sdf`是保留三维坐标和键级的多记录 SDF。`affinity_predictions.csv`中的
 `ligand_record_index`为 1-based 记录号，并包含 PNU 2D/Pharm2D、预筛3D、Smina、Docking
-后3D、QED及理化字段；`predicted_paffinity`初始化为空。外部模型只需按`pose_id`填写该列，
-不要修改追踪键或把 PDBQT 当作 affinity 模型输入。
+后3D、QED及理化字段；`predicted_paffinity`初始化为空。仓库内置的本地 3DMPG 模型可通过
+`scripts/run_local_affinity.sh`完成逐 pose 预测、追踪校验和原子回填。预测中断时会保留
+`model_pose_predictions.csv.partial`，用相同命令重跑即可断点续算；正式表更新前会备份为
+`affinity_predictions.before_local_affinity.csv`。不要修改追踪键或把 PDBQT 当作 affinity
+模型输入。
 
-填写完成后运行：
+填写完成后运行独立的最终评分与 Top 200 导出命令：
 
 ```bash
-bash scripts/run_score.sh
+bash scripts/run_final_score.sh
 ```
 
-最终结果写入`runs/<run>/11_integrated_scoring/wt/ranked_parents.csv`。默认要求 affinity 的
-pose 覆盖率和母体覆盖率均至少为95%，空预测会直接报错，不会被静默填值。
+完整排名写入`runs/<run>/11_integrated_scoring/wt/ranked_parents.csv`，Top 200 写入
+`runs/<run>/11_integrated_scoring/wt/top_200_hits.tsv`，列为
+`hit_id、SMILES、Rank、score`。默认要求 affinity 的 pose 覆盖率和母体覆盖率均至少为95%，
+空预测会直接报错，不会被静默填值。
 
 ## 质量控制
 
